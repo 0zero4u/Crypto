@@ -1,0 +1,21 @@
+{
+  "name": "crypto-binance-listener",
+  "version": "1.0.0",
+  "description": "Node.js script to listen to Binance WebSocket stream for BTCUSDT depth.",
+  "main": "binance_listener.js",
+  "scripts": {
+    "start": "node binance_listener.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "crypto",
+    "binance",
+    "websocket",
+    "nodejs"
+  ],
+  "author": "0zero4u",
+  "license": "ISC",
+  "dependencies": {
+    "ws": "^8.17.0"
+  }
+}
