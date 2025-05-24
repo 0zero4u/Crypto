@@ -1,9 +1,7 @@
-// File: binance_listener.js
 const WebSocket = require('ws');
+const msgpack = require('msgpack-lite');
 
 // --- Global Error Handlers ---
-// These should be at the very top to catch any synchronous errors during script initialization
-// or asynchronous errors not caught elsewhere.
 process.on('uncaughtException', (err, origin) => {
     console.error(`[Listener] FATAL: UNCAUGHT EXCEPTION`);
     console.error(err.stack || err);
@@ -16,14 +14,15 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('[Listener] FATAL: UNHANDLED PROMISE REJECTION');
     console.error('Unhandled Rejection at:', promise);
     console.error('Reason:', reason.stack || reason);
-    // setTimeout(() => process.exit(1), 1000).unref(); // Optionally exit
+    // Optionally exit for unhandled rejections if they are always critical
+    // setTimeout(() => process.exit(1), 1000).unref();
 });
 
 // --- Configuration ---
 const binanceStreamUrl = 'wss://stream.binance.com:9443/ws/btcusdt@depth5@100ms';
 const internalReceiverUrl = 'ws://localhost:8082';
-const RECONNECT_INTERVAL = 5000;
-const BINANCE_PING_INTERVAL_MS = 3 * 60 * 1000;
+const RECONNECT_INTERVAL = 5000; // ms
+const BINANCE_PING_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes
 
 // --- State Variables ---
 let binanceWsClient;
@@ -32,13 +31,10 @@ let binancePingIntervalId;
 
 // --- Internal Receiver Connection ---
 function connectToInternalReceiver() {
-    // Prevent multiple connection attempts if already connecting or connected
     if (internalWsClient && (internalWsClient.readyState === WebSocket.OPEN || internalWsClient.readyState === WebSocket.CONNECTING)) {
-        // console.log('[Listener] Already connected or attempting to connect to internal receiver.'); // Reduced verbosity
-        return;
+        return; // Already connected or connecting
     }
     console.log(`[Listener] Attempting to connect to internal data receiver: ${internalReceiverUrl}`);
-
     internalWsClient = new WebSocket(internalReceiverUrl);
 
     internalWsClient.on('open', () => {
@@ -46,27 +42,68 @@ function connectToInternalReceiver() {
     });
 
     internalWsClient.on('error', (err) => {
+        // Log errors, but not necessarily every failed connection attempt during retries.
+        // Consider adding a counter for retries if logging becomes too noisy.
         console.error('[Listener] Internal receiver WebSocket error:', err.message);
     });
 
     internalWsClient.on('close', (code, reason) => {
         const reasonStr = reason ? reason.toString() : 'N/A';
-        console.log(`[Listener] Internal receiver WebSocket closed. Code: ${code}, Reason: ${reasonStr}`);
+        console.log(`[Listener] Internal receiver WebSocket closed. Code: ${code}, Reason: ${reasonStr}. Reconnecting in ${RECONNECT_INTERVAL / 1000}s...`);
         internalWsClient = null;
-        console.log(`[Listener] Attempting to reconnect to internal receiver in ${RECONNECT_INTERVAL / 1000} seconds...`);
         setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL);
     });
 }
 
+/**
+ * WARNING: This manual parser is highly optimized for a specific, stable JSON format
+ * and assumes minimal whitespace. It is very fragile and will break if the
+ * Binance stream format for 'btcusdt@depth5@100ms' changes even slightly.
+ */
+function manualParseBinanceDepthSnapshot(messageString) {
+    try {
+        let lastUpdateIdNum = null;
+        let bestBidPriceStr = null;
+
+        const lastUpdateIdKey = '"lastUpdateId":';
+        let currentIndex = messageString.indexOf(lastUpdateIdKey);
+        if (currentIndex === -1) return null;
+        currentIndex += lastUpdateIdKey.length;
+        let valueEndIndex = currentIndex;
+        while (valueEndIndex < messageString.length && messageString[valueEndIndex] >= '0' && messageString[valueEndIndex] <= '9') {
+            valueEndIndex++;
+        }
+        if (currentIndex === valueEndIndex) return null;
+        lastUpdateIdNum = parseInt(messageString.substring(currentIndex, valueEndIndex), 10);
+        if (isNaN(lastUpdateIdNum)) return null;
+
+        const bidsKeyAndOpening = '"bids":[["';
+        currentIndex = messageString.indexOf(bidsKeyAndOpening, valueEndIndex);
+        if (currentIndex === -1) return null;
+        currentIndex += bidsKeyAndOpening.length;
+        valueEndIndex = messageString.indexOf('"', currentIndex);
+        if (valueEndIndex === -1) return null;
+        bestBidPriceStr = messageString.substring(currentIndex, valueEndIndex);
+        if (bestBidPriceStr.length === 0 || isNaN(parseFloat(bestBidPriceStr))) return null;
+
+        return {
+            lastUpdateId: lastUpdateIdNum,
+            bestBidPrice: bestBidPriceStr,
+            timestamp: Date.now()
+        };
+    } catch (error) {
+        // This could be frequent if messages vary, keep it commented unless debugging parsing issues.
+        // console.error('[Listener] Exception in manualParseBinanceDepthSnapshot:', error.message);
+        return null;
+    }
+}
+
 // --- Binance Stream Connection ---
 function connectToBinance() {
-    // Prevent multiple connection attempts if already connecting or connected
     if (binanceWsClient && (binanceWsClient.readyState === WebSocket.OPEN || binanceWsClient.readyState === WebSocket.CONNECTING)) {
-        // console.log('[Listener] Already connected or attempting to connect to Binance.'); // Reduced verbosity
-        return;
+        return; // Already connected or connecting
     }
     console.log(`[Listener] Attempting to connect to Binance stream: ${binanceStreamUrl}`);
-
     binanceWsClient = new WebSocket(binanceStreamUrl);
 
     binanceWsClient.on('open', function open() {
@@ -74,60 +111,55 @@ function connectToBinance() {
         if (binancePingIntervalId) clearInterval(binancePingIntervalId);
         binancePingIntervalId = setInterval(() => {
             if (binanceWsClient && binanceWsClient.readyState === WebSocket.OPEN) {
-                // console.log('[Listener] Sending PING to Binance'); // Verbose, keep commented
-                binanceWsClient.ping(() => {});
+                binanceWsClient.ping(() => {}); // No log for ping send
             }
         }, BINANCE_PING_INTERVAL_MS);
     });
 
     binanceWsClient.on('message', function incoming(data) {
         const messageString = data.toString();
-        // console.log('[Listener] Received raw from Binance:', messageString.substring(0,100)); // Very verbose
+        const extractedData = manualParseBinanceDepthSnapshot(messageString);
 
-        try {
-            const depthData = JSON.parse(messageString);
-
-            if (depthData && depthData.bids && depthData.asks && depthData.lastUpdateId !== undefined) {
-                const extractedData = {
-                    lastUpdateId: depthData.lastUpdateId,
-                    bids: depthData.bids,
-                    asks: depthData.asks,
-                    timestamp: Date.now()
-                };
-
-                if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
-                    internalWsClient.send(JSON.stringify(extractedData));
-                    // console.log('[Listener] Sent data to internal receiver.'); // Very verbose
-                } else {
-                    console.warn('[Listener] Internal receiver not connected/open. Data from Binance NOT sent.');
+        if (extractedData) {
+            if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
+                try {
+                    const packedData = msgpack.encode(extractedData);
+                    internalWsClient.send(packedData);
+                    // High-frequency log: // console.log('[Listener] Sent data (MessagePack) to internal receiver.');
+                } catch (encodeError) {
+                     console.error('[Listener] CRITICAL: Error encoding data to MessagePack:', encodeError.message, encodeError.stack);
+                     // Potentially add logic to handle repeated encoding errors, e.g., stop or alert.
                 }
             } else {
-                console.warn('[Listener] Received unexpected data structure from Binance:', messageString.substring(0,200));
+                // This log can be very frequent if the internal receiver is down.
+                // Consider rate-limiting this log or having a state to log only once per disconnection.
+                // For now, kept for visibility during disconnections.
+                console.warn('[Listener] Internal receiver not connected/open. Data from Binance NOT sent.');
             }
-        } catch (error) {
-            console.error('[Listener] Error parsing Binance message or processing data:', error.message);
-            console.error('[Listener] Problematic Binance message snippet:', messageString.substring(0, 200));
+        } else {
+            // Log only if it's not a known non-data message (like WebSocket protocol pings/pongs if they come as messages)
+            // and the message isn't empty.
+            if (messageString && !messageString.includes('"ping"') && !messageString.includes('"pong"')) {
+                 // This log indicates a potential issue with the manual parser or an unexpected message format.
+                 // Can be frequent if the stream changes. Keep an eye on it.
+                 console.warn('[Listener] Failed to manually parse Binance message or data was unexpected. Snippet:', messageString.substring(0, 100));
+            }
         }
     });
 
     binanceWsClient.on('pong', () => {
-        // console.log('[Listener] Received PONG from Binance. Connection healthy.'); // Verbose, keep commented
+        // High-frequency log: // console.log('[Listener] Received PONG from Binance.');
     });
 
     binanceWsClient.on('error', function error(err) {
         console.error('[Listener] Binance WebSocket error:', err.message);
-        // console.error('[Listener] Binance WebSocket error object:', err); // Can be very verbose, enable for deep debugging
     });
 
     binanceWsClient.on('close', function close(code, reason) {
         const reasonStr = reason ? reason.toString() : 'N/A';
-        console.log(`[Listener] Binance WebSocket closed. Code: ${code}, Reason: ${reasonStr}`);
-        if (binancePingIntervalId) {
-            clearInterval(binancePingIntervalId);
-            binancePingIntervalId = null;
-        }
+        console.log(`[Listener] Binance WebSocket closed. Code: ${code}, Reason: ${reasonStr}. Reconnecting in ${RECONNECT_INTERVAL / 1000}s...`);
+        if (binancePingIntervalId) { clearInterval(binancePingIntervalId); binancePingIntervalId = null; }
         binanceWsClient = null;
-        console.log(`[Listener] Attempting to reconnect to Binance in ${RECONNECT_INTERVAL / 1000} seconds...`);
         setTimeout(connectToBinance, RECONNECT_INTERVAL);
     });
 }
@@ -136,5 +168,4 @@ function connectToBinance() {
 console.log(`[Listener] PID: ${process.pid} --- Binance listener script starting...`);
 connectToBinance();
 connectToInternalReceiver();
-
 console.log(`[Listener] PID: ${process.pid} --- Initial connection attempts initiated.`);
