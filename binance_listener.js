@@ -1,5 +1,6 @@
+// 
 const WebSocket = require('ws');
-const msgpack = require('msgpack-lite');
+// const msgpack = require('msgpack-lite'); // No longer needed by this script
 
 // --- Global Error Handlers ---
 process.on('uncaughtException', (err, origin) => {
@@ -14,7 +15,6 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('[Listener] FATAL: UNHANDLED PROMISE REJECTION');
     console.error('Unhandled Rejection at:', promise);
     console.error('Reason:', reason.stack || reason);
-    // Optionally exit for unhandled rejections if they are always critical
     // setTimeout(() => process.exit(1), 1000).unref();
 });
 
@@ -32,7 +32,7 @@ let binancePingIntervalId;
 // --- Internal Receiver Connection ---
 function connectToInternalReceiver() {
     if (internalWsClient && (internalWsClient.readyState === WebSocket.OPEN || internalWsClient.readyState === WebSocket.CONNECTING)) {
-        return; // Already connected or connecting
+        return;
     }
     console.log(`[Listener] Attempting to connect to internal data receiver: ${internalReceiverUrl}`);
     internalWsClient = new WebSocket(internalReceiverUrl);
@@ -42,8 +42,6 @@ function connectToInternalReceiver() {
     });
 
     internalWsClient.on('error', (err) => {
-        // Log errors, but not necessarily every failed connection attempt during retries.
-        // Consider adding a counter for retries if logging becomes too noisy.
         console.error('[Listener] Internal receiver WebSocket error:', err.message);
     });
 
@@ -59,8 +57,10 @@ function connectToInternalReceiver() {
  * WARNING: This manual parser is highly optimized for a specific, stable JSON format
  * and assumes minimal whitespace. It is very fragile and will break if the
  * Binance stream format for 'btcusdt@depth5@100ms' changes even slightly.
+ *
+ * Returns an object like: { lastUpdateId: number, bestBidPrice: string } or null.
  */
-function manualParseBinanceDepthSnapshot(messageString) {
+function manualExtractMinimalData(messageString) {
     try {
         let lastUpdateIdNum = null;
         let bestBidPriceStr = null;
@@ -77,23 +77,22 @@ function manualParseBinanceDepthSnapshot(messageString) {
         lastUpdateIdNum = parseInt(messageString.substring(currentIndex, valueEndIndex), 10);
         if (isNaN(lastUpdateIdNum)) return null;
 
-        const bidsKeyAndOpening = '"bids":[["';
+        const bidsKeyAndOpening = '"bids":[["'; // Assuming bids are always present and first bid is best
         currentIndex = messageString.indexOf(bidsKeyAndOpening, valueEndIndex);
         if (currentIndex === -1) return null;
         currentIndex += bidsKeyAndOpening.length;
         valueEndIndex = messageString.indexOf('"', currentIndex);
         if (valueEndIndex === -1) return null;
         bestBidPriceStr = messageString.substring(currentIndex, valueEndIndex);
-        if (bestBidPriceStr.length === 0 || isNaN(parseFloat(bestBidPriceStr))) return null;
+        if (bestBidPriceStr.length === 0 || isNaN(parseFloat(bestBidPriceStr))) return null; // Basic validation
 
         return {
-            lastUpdateId: lastUpdateIdNum,
-            bestBidPrice: bestBidPriceStr,
-            timestamp: Date.now()
+            l: lastUpdateIdNum,    // Shorter key for lastUpdateId
+            b: bestBidPriceStr,    // Shorter key for bestBidPrice
+            t: Date.now()          // Timestamp
         };
     } catch (error) {
-        // This could be frequent if messages vary, keep it commented unless debugging parsing issues.
-        // console.error('[Listener] Exception in manualParseBinanceDepthSnapshot:', error.message);
+        // console.error('[Listener] Exception in manualExtractMinimalData:', error.message);
         return null;
     }
 }
@@ -101,7 +100,7 @@ function manualParseBinanceDepthSnapshot(messageString) {
 // --- Binance Stream Connection ---
 function connectToBinance() {
     if (binanceWsClient && (binanceWsClient.readyState === WebSocket.OPEN || binanceWsClient.readyState === WebSocket.CONNECTING)) {
-        return; // Already connected or connecting
+        return;
     }
     console.log(`[Listener] Attempting to connect to Binance stream: ${binanceStreamUrl}`);
     binanceWsClient = new WebSocket(binanceStreamUrl);
@@ -111,44 +110,38 @@ function connectToBinance() {
         if (binancePingIntervalId) clearInterval(binancePingIntervalId);
         binancePingIntervalId = setInterval(() => {
             if (binanceWsClient && binanceWsClient.readyState === WebSocket.OPEN) {
-                binanceWsClient.ping(() => {}); // No log for ping send
+                binanceWsClient.ping(() => {});
             }
         }, BINANCE_PING_INTERVAL_MS);
     });
 
     binanceWsClient.on('message', function incoming(data) {
         const messageString = data.toString();
-        const extractedData = manualParseBinanceDepthSnapshot(messageString);
+        const minimalData = manualExtractMinimalData(messageString);
 
-        if (extractedData) {
+        if (minimalData) {
             if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
                 try {
-                    const packedData = msgpack.encode(extractedData);
-                    internalWsClient.send(packedData);
-                    // High-frequency log: // console.log('[Listener] Sent data (MessagePack) to internal receiver.');
-                } catch (encodeError) {
-                     console.error('[Listener] CRITICAL: Error encoding data to MessagePack:', encodeError.message, encodeError.stack);
-                     // Potentially add logic to handle repeated encoding errors, e.g., stop or alert.
+                    // --- MODIFICATION: Send minimal JSON string ---
+                    const minimalJsonString = JSON.stringify(minimalData);
+                    internalWsClient.send(minimalJsonString);
+                    // --- END MODIFICATION ---
+                    // High-frequency log: // console.log('[Listener] Sent minimal JSON string to internal receiver.');
+                } catch (stringifyError) {
+                     console.error('[Listener] CRITICAL: Error stringifying minimal data to JSON:', stringifyError.message, stringifyError.stack);
                 }
             } else {
-                // This log can be very frequent if the internal receiver is down.
-                // Consider rate-limiting this log or having a state to log only once per disconnection.
-                // For now, kept for visibility during disconnections.
                 console.warn('[Listener] Internal receiver not connected/open. Data from Binance NOT sent.');
             }
         } else {
-            // Log only if it's not a known non-data message (like WebSocket protocol pings/pongs if they come as messages)
-            // and the message isn't empty.
             if (messageString && !messageString.includes('"ping"') && !messageString.includes('"pong"')) {
-                 // This log indicates a potential issue with the manual parser or an unexpected message format.
-                 // Can be frequent if the stream changes. Keep an eye on it.
-                 console.warn('[Listener] Failed to manually parse Binance message or data was unexpected. Snippet:', messageString.substring(0, 100));
+                 console.warn('[Listener] Failed to manually extract minimal data or data was unexpected. Snippet:', messageString.substring(0, 100));
             }
         }
     });
 
     binanceWsClient.on('pong', () => {
-        // High-frequency log: // console.log('[Listener] Received PONG from Binance.');
+        // console.log('[Listener] Received PONG from Binance.');
     });
 
     binanceWsClient.on('error', function error(err) {
@@ -165,7 +158,7 @@ function connectToBinance() {
 }
 
 // --- Start the connections ---
-console.log(`[Listener] PID: ${process.pid} --- Binance listener script starting...`);
+console.log(`[Listener] PID: ${process.pid} --- Binance listener script starting... (Minimal JSON Mode)`);
 connectToBinance();
 connectToInternalReceiver();
 console.log(`[Listener] PID: ${process.pid} --- Initial connection attempts initiated.`);
