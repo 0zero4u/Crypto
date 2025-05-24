@@ -1,22 +1,30 @@
 {
   "name": "crypto-binance-listener",
   "version": "1.0.0",
-  "description": "Node.js script to listen to Binance WebSocket stream for BTCUSDT depth.",
+  "description": "Node.js scripts to listen to Binance WebSocket stream for BTCUSDT depth and relay data.",
   "main": "binance_listener.js",
   "scripts": {
-    "start": "node binance_listener.js",
+    "start-listener": "node binance_listener.js",
+    "start-receiver": "node data_receiver_server.js",
+    "pm2-start-listener": "pm2 start binance_listener.js --name binance-listener-prod",
+    "pm2-start-receiver": "pm2 start data_receiver_server.js --name data-receiver-prod",
+    "pm2-list": "pm2 list",
+    "pm2-stop-all": "pm2 stop all && pm2 delete all",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
     "crypto",
     "binance",
     "websocket",
-    "nodejs"
+    "nodejs",
+    "depth",
+    "btcusdt",
+    "msgpack"
   ],
   "author": "0zero4u",
   "license": "ISC",
   "dependencies": {
-    "ws": "^8.17.0"
+    "ws": "^8.17.0",
     "msgpack-lite": "^0.1.26"
   }
 }
