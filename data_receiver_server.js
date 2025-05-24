@@ -1,5 +1,7 @@
+// data_receiver_server.js (Modified)
+
 const WebSocket = require('ws');
-const msgpack = require('msgpack-lite');
+const msgpack = require('msgpack-lite'); // Still needed for decoding from internal listener
 
 const PUBLIC_PORT = 8081;
 const INTERNAL_LISTENER_PORT = 8082;
@@ -13,35 +15,49 @@ process.on('uncaughtException', (error) => {
   console.error(`[Receiver] PID: ${process.pid} --- Attempting graceful shutdown then forcing exit...`);
 
   let serversClosed = 0;
-  const totalServersToClose = 2;
+  const totalServersToClose = 2; // wssAndroidClients and wssListenerSource
 
   const attemptExit = () => {
     serversClosed++;
     if (serversClosed >= totalServersToClose) {
       console.error(`[Receiver] PID: ${process.pid} --- All servers attempted to close. Forcing exit.`);
-      process.exit(1);
+      process.exit(1); // Exit with error code
     }
   };
 
   const closeServer = (server, serverName) => {
     if (server) {
-      server.close(() => {
-        console.log(`[Receiver] PID: ${process.pid} --- ${serverName} (on uncaughtException) closed.`);
+      console.log(`[Receiver] PID: ${process.pid} --- Attempting to close ${serverName} (on uncaughtException)...`);
+      server.close((err) => {
+        if (err) {
+          console.error(`[Receiver] PID: ${process.pid} --- Error closing ${serverName} (on uncaughtException):`, err.message);
+        } else {
+          console.log(`[Receiver] PID: ${process.pid} --- ${serverName} (on uncaughtException) closed.`);
+        }
         attemptExit();
       });
+      // Terminate connections for faster shutdown if server.close() hangs
+      if (server.clients && typeof server.clients.forEach === 'function') {
+        server.clients.forEach(client => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.terminate();
+          }
+        });
+      }
     } else {
       console.log(`[Receiver] PID: ${process.pid} --- ${serverName} (on uncaughtException) was not initialized or already null.`);
-      attemptExit();
+      attemptExit(); // Count as "closed" if it was never up
     }
   };
 
   closeServer(wssAndroidClients, 'Public server');
   closeServer(wssListenerSource, 'Internal server');
 
+  // Force exit after a timeout if graceful shutdown fails
   setTimeout(() => {
     console.error(`[Receiver] PID: ${process.pid} --- Timeout waiting for servers to close on uncaughtException. Forcing exit.`);
     process.exit(1);
-  }, 5000).unref();
+  }, 5000).unref(); // .unref() allows the program to exit if this is the only timer
 });
 
 
@@ -92,31 +108,33 @@ try {
 
         if (listenerIp !== '127.0.0.1' && listenerIp !== '::1' && listenerIp !== '::ffff:127.0.0.1') {
             console.warn(`[Receiver] PID: ${process.pid} --- UNAUTHORIZED connection attempt to internal listener port from IP: ${listenerIp}. Closing connection.`);
-            wsListener.close();
+            wsListener.terminate(); // Use terminate for forceful close
             return;
         }
         console.log(`[Receiver] PID: ${process.pid} --- binance_listener.js connected internally from ${listenerIp}`);
 
         wsListener.on('message', (message) => { // message here is a Buffer (MessagePack from listener)
             try {
-                const decodedData = msgpack.decode(message); // Assumes data structure {lastUpdateId, bestBidPrice, timestamp}
+                const decodedData = msgpack.decode(message); // Decoded data: {lastUpdateId, bestBidPrice, timestamp}
 
                 if (!wssAndroidClients || !wssAndroidClients.clients) {
-                    // This is critical if it happens, but could be noisy if clients frequently connect/disconnect
-                    // For now, kept as an error.
                     console.error(`[Receiver] PID: ${process.pid} --- CRITICAL PRE-BROADCAST: wssAndroidClients or clients set is null/undefined! Data not broadcasted.`);
                     return;
                 }
 
                 const numAndroidClients = wssAndroidClients.clients.size;
                 if (numAndroidClients > 0) {
-                    const binaryDataForAndroid = msgpack.encode(decodedData); // Re-encode for sending
+                    // --- MODIFICATION: Convert to JSON string for client-side ---
+                    const jsonDataForAndroid = JSON.stringify(decodedData);
+                    // --- END MODIFICATION ---
 
                     wssAndroidClients.clients.forEach(androidClient => {
                         if (androidClient.readyState === WebSocket.OPEN) {
                             try {
-                                androidClient.send(binaryDataForAndroid);
-                                // High-frequency log: // console.log(`[Receiver] PID: ${process.pid} --- Sent data to Android client ${androidClient.clientId}`);
+                                // --- MODIFICATION: Send JSON string ---
+                                androidClient.send(jsonDataForAndroid);
+                                // --- END MODIFICATION ---
+                                // High-frequency log: // console.log(`[Receiver] PID: ${process.pid} --- Sent JSON data to Android client ${androidClient.clientId}`);
                             } catch (sendError) {
                                 console.error(`[Receiver] PID: ${process.pid} --- Send Error to Android client ${androidClient.clientId || 'unknown'}: ${sendError.message}`);
                             }
@@ -130,9 +148,11 @@ try {
             } catch (e) {
                  if (e.message && (e.message.toLowerCase().includes('msgpack') || e.message.toLowerCase().includes('decode'))) {
                      console.error(`[Receiver] PID: ${process.pid} --- CRITICAL: ERROR decoding MessagePack from listener: ${e.message}`, e.stack);
-                     // Consider logging the raw message snippet (hex) for debugging if this persists.
                      // console.error('[Receiver] Raw message (first 50 bytes as hex):', message.slice(0, 50).toString('hex'));
-                 } else {
+                 } else if (e.message && e.message.toLowerCase().includes('json.stringify')) {
+                     console.error(`[Receiver] PID: ${process.pid} --- CRITICAL: ERROR stringifying data to JSON: ${e.message}`, e.stack, 'Data:', decodedData);
+                 }
+                 else {
                     console.error(`[Receiver] PID: ${process.pid} --- CRITICAL: ERROR in wsListener.on("message") processing: ${e.message}`, e.stack);
                 }
             }
@@ -161,33 +181,45 @@ try {
 const gracefulShutdown = (signal) => {
     console.log(`\n[Receiver] PID: ${process.pid} --- ${signal} received. Shutting down servers...`);
     let serversClosed = 0;
-    const totalServersToClose = 2;
+    const totalServersToClose = 2; // wssAndroidClients and wssListenerSource
 
     const onServerClose = (serverName) => {
         console.log(`[Receiver] PID: ${process.pid} --- ${serverName} closed.`);
         serversClosed++;
         if (serversClosed >= totalServersToClose) {
             console.log(`[Receiver] PID: ${process.pid} --- All servers closed. Exiting.`);
-            setTimeout(() => process.exit(0), 500); // Allow time for logs to flush
+            setTimeout(() => process.exit(signal === 'SIGINT' ? 0 : 1), 500); // Allow time for logs, exit 0 for SIGINT
+        }
+    };
+    
+    const closeAndTerminate = (server, serverName) => {
+        if (server) {
+            console.log(`[Receiver] PID: ${process.pid} --- Closing ${serverName}...`);
+            if (server.clients && typeof server.clients.forEach === 'function') {
+                server.clients.forEach(client => {
+                    if (client.readyState === WebSocket.OPEN) {
+                        client.terminate(); // Terminate client connections
+                    }
+                });
+            }
+            server.close((err) => {
+                if (err) {
+                    console.error(`[Receiver] PID: ${process.pid} --- Error closing ${serverName}: ${err.message}`);
+                }
+                onServerClose(serverName);
+            });
+        } else {
+            onServerClose(`${serverName} (was not initialized)`);
         }
     };
 
-    if (wssAndroidClients) {
-        wssAndroidClients.close(() => onServerClose('Public server for Android clients'));
-    } else {
-        onServerClose('Public server for Android clients (was not initialized)');
-    }
-
-    if (wssListenerSource) {
-        wssListenerSource.close(() => onServerClose('Internal server for binance_listener'));
-    } else {
-        onServerClose('Internal server for binance_listener (was not initialized)');
-    }
+    closeAndTerminate(wssAndroidClients, 'Public server for Android clients');
+    closeAndTerminate(wssListenerSource, 'Internal server for binance_listener');
 
     // Fallback timeout for graceful shutdown
     setTimeout(() => {
         console.error(`[Receiver] PID: ${process.pid} --- Graceful shutdown timeout. Forcing exit.`);
-        process.exit(signal === 'SIGINT' ? 0 : 1); // Exit with 0 on SIGINT if timeout, 1 otherwise
+        process.exit(1); // Force exit with error if timeout
     }, 5000).unref();
 };
 
