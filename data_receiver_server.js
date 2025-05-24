@@ -1,4 +1,4 @@
-// File: data_receiver_server.js
+
 const WebSocket = require('ws');
 
 const PUBLIC_PORT = 8081;
@@ -30,6 +30,7 @@ process.on('uncaughtException', (error) => {
         attemptExit();
       });
     } else {
+      // This log is kept as it's part of a critical error handling path
       console.log(`[Receiver] PID: ${process.pid} --- ${serverName} (on uncaughtException) was not initialized or already null.`);
       attemptExit();
     }
@@ -48,22 +49,23 @@ process.on('uncaughtException', (error) => {
 let wssAndroidClients;
 try {
     wssAndroidClients = new WebSocket.Server({ port: PUBLIC_PORT });
-    console.log(`[Receiver] PID: ${process.pid} --- Public WebSocket server for Android clients started on port ${PUBLIC_PORT}`);
+    // console.log(`[Receiver] PID: ${process.pid} --- Public WebSocket server for Android clients started on port ${PUBLIC_PORT}`);
 
     let androidClientCounter = 0;
 
     wssAndroidClients.on('connection', (ws, req) => {
         ws.clientId = `android-${androidClientCounter++}`;
         const clientIp = req.socket.remoteAddress || req.headers['x-forwarded-for'];
-        console.log(`[Receiver] PID: ${process.pid} --- Android client ${ws.clientId} (IP: ${clientIp}) connected.`);
+        // console.log(`[Receiver] PID: ${process.pid} --- Android client ${ws.clientId} (IP: ${clientIp}) connected.`);
 
         ws.on('message', (message) => {
+            // Message logging from Android clients typically verbose, keep commented or remove if not needed for debugging.
             // console.log(`[Receiver] PID: ${process.pid} --- Received message from Android client ${ws.clientId} (IP: ${clientIp}): ${message.toString().substring(0,100)}...`);
         });
 
         ws.on('close', (code, reason) => {
             const reasonStr = reason ? reason.toString() : 'N/A';
-            console.log(`[Receiver] PID: ${process.pid} --- Android client ${ws.clientId} (IP: ${clientIp}) disconnected. Code: ${code}, Reason: ${reasonStr}`);
+            // console.log(`[Receiver] PID: ${process.pid} --- Android client ${ws.clientId} (IP: ${clientIp}) disconnected. Code: ${code}, Reason: ${reasonStr}`);
         });
 
         ws.on('error', (err) => {
@@ -84,18 +86,17 @@ try {
 let wssListenerSource;
 try {
     wssListenerSource = new WebSocket.Server({ port: INTERNAL_LISTENER_PORT });
-    console.log(`[Receiver] PID: ${process.pid} --- Internal WebSocket server for binance_listener.js started on port ${INTERNAL_LISTENER_PORT}`);
+    // console.log(`[Receiver] PID: ${process.pid} --- Internal WebSocket server for binance_listener.js started on port ${INTERNAL_LISTENER_PORT}`);
 
     wssListenerSource.on('connection', (wsListener, req) => {
         const listenerIp = req.socket.remoteAddress;
-        // console.log(`[Receiver] PID: ${process.pid} --- Connection attempt to internal listener port from IP: ${listenerIp}.`);
 
         if (listenerIp !== '127.0.0.1' && listenerIp !== '::1' && listenerIp !== '::ffff:127.0.0.1') {
             console.warn(`[Receiver] PID: ${process.pid} --- UNAUTHORIZED connection attempt to internal listener port from IP: ${listenerIp}. Closing connection.`);
             wsListener.close();
             return;
         }
-        console.log(`[Receiver] PID: ${process.pid} --- binance_listener.js connected internally from ${listenerIp}`);
+        // console.log(`[Receiver] PID: ${process.pid} --- binance_listener.js connected internally from ${listenerIp}`);
 
         wsListener.on('message', (message) => {
             try {
@@ -116,10 +117,12 @@ try {
                                 console.error(`[Receiver] PID: ${process.pid} --- Send Error to Android client ${androidClient.clientId || 'unknown'}: ${sendError.message}`, sendError.stack || '');
                             }
                         } else {
+                            // Client not open state is usually not an error, but a state. Logging can be very verbose.
                             // console.log(`[Receiver] PID: ${process.pid} --- Android client ${androidClient.clientId || 'unknown'} not OPEN (state: ${androidClient.readyState}). Skipping.`);
                         }
                     });
                 } else {
+                    // No clients connected is a normal state, not an error.
                     // console.log(`[Receiver] PID: ${process.pid} --- No Android clients connected. Skipping broadcast.`);
                 }
             } catch (e) {
@@ -129,7 +132,7 @@ try {
 
         wsListener.on('close', (code, reason) => {
             const reasonStr = reason ? reason.toString() : 'N/A';
-            console.log(`[Receiver] PID: ${process.pid} --- binance_listener.js disconnected internally from ${listenerIp}. Code: ${code}, Reason: ${reasonStr}`);
+            // console.log(`[Receiver] PID: ${process.pid} --- binance_listener.js disconnected internally from ${listenerIp}. Code: ${code}, Reason: ${reasonStr}`);
         });
 
         wsListener.on('error', (err) => {
@@ -157,7 +160,7 @@ const gracefulShutdown = (signal) => {
         serversClosed++;
         if (serversClosed >= totalServersToClose) {
             console.log(`[Receiver] PID: ${process.pid} --- All servers closed. Exiting.`);
-            setTimeout(() => process.exit(0), 500);
+            setTimeout(() => process.exit(0), 500); // Give a bit of time for logs to flush
         }
     };
 
@@ -175,11 +178,11 @@ const gracefulShutdown = (signal) => {
 
     setTimeout(() => {
         console.error(`[Receiver] PID: ${process.pid} --- Graceful shutdown timeout. Forcing exit.`);
-        process.exit(signal === 'SIGINT' ? 0 : 1);
+        process.exit(signal === 'SIGINT' ? 0 : 1); // Exit with 0 on SIGINT, 1 on SIGTERM if timeout
     }, 5000).unref();
 };
 
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
-console.log(`[Receiver] PID: ${process.pid} --- data_receiver_server.js script initialized. Waiting for connections.`);
+// console.log(`[Receiver] PID: ${process.pid} --- data_receiver_server.js script initialized. Waiting for connections.`);
