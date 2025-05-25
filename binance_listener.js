@@ -21,7 +21,7 @@ const binanceStreamUrl = 'wss://stream.binance.com:9443/ws/btcusdt@trade';
 const internalReceiverUrl = 'ws://localhost:8082';
 const RECONNECT_INTERVAL = 5000; // ms
 const BINANCE_PING_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes
-const PRICE_CHANGE_THRESHOLD = 2.0; // Send data if price changes by this much or more
+const PRICE_CHANGE_THRESHOLD = 1.2; // Send data if price changes by this much or more
 
 // --- State Variables ---
 let binanceWsClient;
