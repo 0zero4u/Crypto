@@ -22,7 +22,7 @@ const binanceBookTickerStreamUrl = 'wss://stream.binance.com:9443/ws/btcusdt@boo
 const internalReceiverUrl = 'ws://localhost:8082';
 const RECONNECT_INTERVAL = 5000;
 const BINANCE_PING_INTERVAL_MS = 3 * 60 * 1000;
-const PRICE_CHANGE_THRESHOLD = 1.2; // Send data if price changes by this much or more (for non-signal updates)
+const PRICE_CHANGE_THRESHOLD = 0.01; // Send data if price changes by this much or more (for non-signal updates)
 
 // --- Core State & Parameters (Global/Shared) ---
 const TICK_SIZE = 0.01; // CRITICAL for BTCUSDT
