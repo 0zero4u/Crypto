@@ -1,4 +1,4 @@
-// binance_listener.js
+
 
 const WebSocket = require('ws');
 
@@ -7,358 +7,92 @@ process.on('uncaughtException', (err, origin) => {
     console.error(`[Listener] PID: ${process.pid} --- FATAL: UNCAUGHT EXCEPTION`);
     console.error(err.stack || err);
     console.error(`[Listener] Exception origin: ${origin}`);
-    console.error(`[Listener] PID: ${process.pid} --- Exiting due to uncaught exception...`);
-    setTimeout(() => {
-        if (internalWsClient && typeof internalWsClient.terminate === 'function') {
-            try { internalWsClient.terminate(); } catch (e) { /* ignore */ }
-        }
-        if (binanceAggTradeWsClient && typeof binanceAggTradeWsClient.terminate === 'function') {
-            try { binanceAggTradeWsClient.terminate(); } catch (e) { /* ignore */ }
-        }
-        if (binanceDepthWsClient && typeof binanceDepthWsClient.terminate === 'function') {
-            try { binanceDepthWsClient.terminate(); } catch (e) { /* ignore */ }
-        }
-        process.exit(1);
-    }, 1000).unref();
+    process.exit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error(`[Listener] PID: ${process.pid} --- FATAL: UNHANDLED PROMISE REJECTION`);
     console.error('[Listener] Unhandled Rejection at:', promise);
     console.error('[Listener] Reason:', reason instanceof Error ? reason.stack : reason);
-    console.error(`[Listener] PID: ${process.pid} --- Exiting due to unhandled promise rejection...`);
-    setTimeout(() => {
-        if (internalWsClient && typeof internalWsClient.terminate === 'function') {
-            try { internalWsClient.terminate(); } catch (e) { /* ignore */ }
-        }
-        if (binanceAggTradeWsClient && typeof binanceAggTradeWsClient.terminate === 'function') {
-            try { binanceAggTradeWsClient.terminate(); } catch (e) { /* ignore */ }
-        }
-        if (binanceDepthWsClient && typeof binanceDepthWsClient.terminate === 'function') {
-            try { binanceDepthWsClient.terminate(); } catch (e) { /* ignore */ }
-        }
-        process.exit(1);
-    }, 1000).unref();
+    process.exit(1);
 });
 
 // --- Configuration ---
-const binanceAggTradeStreamUrl = 'wss://stream.binance.com:9443/ws/btcusdt@aggTrade';
-const binanceDepthStreamUrl = 'wss://fstream.binance.com/ws/btcusdt@depth5@0ms'; // Futures stream
+const binanceBookTickerUrl = 'wss://stream.binance.com:9443/ws/btcusdt@bookTicker';
 const internalReceiverUrl = 'ws://localhost:8082';
 const RECONNECT_INTERVAL_MS = 5000;
-const BINANCE_SPOT_PING_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes for Binance official spot stream
-const BINANCE_FUTURES_PING_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes for Binance Futures stream
-const AGG_TRADE_PRICE_CHANGE_THRESHOLD = 1.2;
-const DEPTH_PRICE_CHANGE_THRESHOLD =20.0;
+const BOOKTICKER_PRICE_CHANGE_THRESHOLD = 1.2; // Set to 0 to disable filtering
+const CALCULATION_INTERVAL_MS = 15;
 
 // --- State Variables ---
-let binanceAggTradeWsClient = null;
-let binanceDepthWsClient = null;
+let binanceBookTickerWsClient = null;
 let internalWsClient = null;
-
-let binanceAggTradePingIntervalId = null;
-let binanceDepthPingIntervalId = null;
-
-let lastSentAggTradePrice = null; // Stores the numeric value of the last aggTrade price sent
-let lastSentBestBidPrice = null;  // Stores the numeric value of the last best bid price sent
+let lastSentBestBidPrice = null;
+let lastEvaluatedTime = 0;
 
 // --- Internal Receiver Connection ---
 function connectToInternalReceiver() {
-    if (internalWsClient && (internalWsClient.readyState === WebSocket.OPEN || internalWsClient.readyState === WebSocket.CONNECTING)) {
-        console.log('[Listener] Internal receiver connection attempt skipped: already open or connecting.');
-        return;
-    }
-    console.log(`[Listener] PID: ${process.pid} --- Connecting to internal receiver: ${internalReceiverUrl}`);
+    if (internalWsClient && (internalWsClient.readyState === WebSocket.OPEN || internalWsClient.readyState === WebSocket.CONNECTING)) return;
     internalWsClient = new WebSocket(internalReceiverUrl);
-
     internalWsClient.on('open', () => {
-        console.log(`[Listener] PID: ${process.pid} --- Connected to internal receiver.`);
-        lastSentAggTradePrice = null; // Reset on new connection to ensure fresh data
-        lastSentBestBidPrice = null;  // Reset on new connection to ensure fresh data
+        console.log(`[Listener] Connected to internal receiver.`);
+        lastSentBestBidPrice = null;
     });
-
-    internalWsClient.on('error', (err) => {
-        console.error(`[Listener] PID: ${process.pid} --- Internal receiver WebSocket error:`, err.message);
-    });
-
-    internalWsClient.on('close', (code, reason) => {
-        const reasonStr = reason ? reason.toString() : 'N/A';
-        console.log(`[Listener] PID: ${process.pid} --- Internal receiver closed. Code: ${code}, Reason: ${reasonStr}. Reconnecting in ${RECONNECT_INTERVAL_MS / 1000}s...`);
+    internalWsClient.on('error', err => console.error(`[Listener] Internal WS error:`, err.message));
+    internalWsClient.on('close', () => {
+        console.log(`[Listener] Internal receiver closed. Reconnecting...`);
         internalWsClient = null;
         setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
     });
 }
 
-/**
- * Manually extracts minimal data from an aggTrade message string and transforms it
- * into the format: { e: "trade", E: number, p: string } or null.
- */
-function manualExtractMinimalData(messageString) {
-    try {
-        const outputEventTypeStr = "trade";
-        let eventTimeNum = null;
-        let priceStr = null;
-
-        const aggTradeEventTypeKey = '"e":"aggTrade"';
-        let currentIndex = messageString.indexOf(aggTradeEventTypeKey);
-        if (currentIndex === -1) return null;
-        let searchStartIndex = currentIndex + aggTradeEventTypeKey.length;
-
-        const eventTimeKey = '"E":';
-        currentIndex = messageString.indexOf(eventTimeKey, searchStartIndex);
-        if (currentIndex === -1) return null;
-        currentIndex += eventTimeKey.length;
-        let valueEndIndex = currentIndex;
-        while (valueEndIndex < messageString.length && messageString[valueEndIndex] >= '0' && messageString[valueEndIndex] <= '9') {
-            valueEndIndex++;
-        }
-        if (currentIndex === valueEndIndex) return null;
-        eventTimeNum = parseInt(messageString.substring(currentIndex, valueEndIndex), 10);
-        if (isNaN(eventTimeNum)) return null;
-
-        const priceKey = '"p":"';
-        let priceStartIndex = messageString.indexOf(priceKey, valueEndIndex);
-        if (priceStartIndex === -1) return null;
-        priceStartIndex += priceKey.length;
-        let priceEndIndex = messageString.indexOf('"', priceStartIndex);
-        if (priceEndIndex === -1) return null;
-        priceStr = messageString.substring(priceStartIndex, priceEndIndex);
-        if (priceStr.length === 0 || isNaN(parseFloat(priceStr))) return null;
-
-        return { e: outputEventTypeStr, E: eventTimeNum, p: priceStr };
-    } catch (error) {
-        // console.error('[Listener] Error in manualExtractMinimalData:', error.message); // Keep silent by default
-        return null;
-    }
-}
-
-// --- Binance AggTrade Stream Connection ---
-function connectToBinanceAggTrade() {
-    if (binanceAggTradeWsClient && (binanceAggTradeWsClient.readyState === WebSocket.OPEN || binanceAggTradeWsClient.readyState === WebSocket.CONNECTING)) {
-        console.log('[Listener] Binance AggTrade connection attempt skipped: already open or connecting.');
-        return;
-    }
-    console.log(`[Listener] PID: ${process.pid} --- Connecting to Binance (AggTrade Spot): ${binanceAggTradeStreamUrl}`);
-    binanceAggTradeWsClient = new WebSocket(binanceAggTradeStreamUrl);
-
-    binanceAggTradeWsClient.on('open', function open() {
-        console.log(`[Listener] PID: ${process.pid} --- Connected to Binance stream (btcusdt@aggTrade Spot).`);
-        lastSentAggTradePrice = null; // Reset on new connection
-
-        if (binanceAggTradePingIntervalId) clearInterval(binanceAggTradePingIntervalId);
-        binanceAggTradePingIntervalId = setInterval(() => {
-            if (binanceAggTradeWsClient && binanceAggTradeWsClient.readyState === WebSocket.OPEN) {
-                try {
-                    binanceAggTradeWsClient.ping(() => {});
-                } catch (pingError) {
-                    console.error(`[Listener] PID: ${process.pid} --- Error sending ping to Binance (AggTrade Spot):`, pingError.message);
-                }
-            }
-        }, BINANCE_SPOT_PING_INTERVAL_MS);
+// --- Binance Spot bookTicker Stream ---
+function connectToBinanceBookTicker() {
+    binanceBookTickerWsClient = new WebSocket(binanceBookTickerUrl);
+    binanceBookTickerWsClient.on('open', () => {
+        console.log('[Listener] Connected to Binance bookTicker stream.');
+        lastSentBestBidPrice = null;
     });
 
-    binanceAggTradeWsClient.on('message', function incoming(data) {
+    binanceBookTickerWsClient.on('message', (data) => {
         try {
-            const messageString = data.toString();
-            const minimalData = manualExtractMinimalData(messageString);
+            const now = Date.now();
+            if (now - lastEvaluatedTime < CALCULATION_INTERVAL_MS) return;
+            lastEvaluatedTime = now;
 
-            if (minimalData) {
-                const currentPrice = parseFloat(minimalData.p);
-                if (isNaN(currentPrice)) {
-                    console.warn(`[Listener] PID: ${process.pid} --- Invalid price in transformed aggTrade data:`, minimalData.p);
-                    return;
-                }
+            const msg = JSON.parse(data);
+            const bestBidPrice = parseFloat(msg.b);
+            const eventTime = msg.E;
 
-                let shouldSendData = false;
-                if (lastSentAggTradePrice === null) {
-                    shouldSendData = true;
-                } else {
-                    const priceDifference = Math.abs(currentPrice - lastSentAggTradePrice);
-                    if (priceDifference >= AGG_TRADE_PRICE_CHANGE_THRESHOLD) {
-                        shouldSendData = true;
-                    }
-                }
+            if (isNaN(bestBidPrice)) return;
 
-                if (shouldSendData) {
-                    if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
-                        let minimalJsonString;
-                        try {
-                            minimalJsonString = JSON.stringify(minimalData);
-                        } catch (stringifyError) {
-                            console.error(`[Listener] PID: ${process.pid} --- CRITICAL: Error stringifying aggTrade minimal data:`, stringifyError.message, stringifyError.stack);
-                            return;
-                        }
-                        
-                        try {
-                            internalWsClient.send(minimalJsonString);
-                            lastSentAggTradePrice = currentPrice;
-                        } catch (sendError) {
-                            console.error(`[Listener] PID: ${process.pid} --- Error sending aggTrade data to internal receiver:`, sendError.message, sendError.stack);
-                        }
-                    }
-                }
+            let shouldSend = false;
+            if (lastSentBestBidPrice === null || BOOKTICKER_PRICE_CHANGE_THRESHOLD === 0) {
+                shouldSend = true;
             } else {
-                if (messageString && !messageString.includes('"e":"pong"')) { // Binance sends {"e":"pong"} for its own pongs
-                    let isPotentiallyJson = false;
-                    try { JSON.parse(messageString); isPotentiallyJson = true; } catch (e) { /* not json */ }
-
-                    if (isPotentiallyJson && !messageString.includes('"e":"aggTrade"')) {
-                         console.warn(`[Listener] PID: ${process.pid} --- Received non-aggTrade JSON or unexpected message from Binance (AggTrade Spot). Snippet:`, messageString.substring(0, 150));
-                    } else if (!isPotentiallyJson) {
-                         console.warn(`[Listener] PID: ${process.pid} --- Received non-JSON message from Binance (AggTrade Spot) (or parsing failed in check). Snippet:`, messageString.substring(0, 150));
-                    }
-                }
+                const diff = Math.abs(bestBidPrice - lastSentBestBidPrice);
+                if (diff >= BOOKTICKER_PRICE_CHANGE_THRESHOLD) shouldSend = true;
             }
-        } catch (e) {
-            console.error(`[Listener] PID: ${process.pid} --- CRITICAL ERROR in Binance (AggTrade Spot) message handler:`, e.message, e.stack);
+
+            if (shouldSend && internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
+                const payload = JSON.stringify({ e: "bookTicker", E: eventTime, p: msg.b });
+                internalWsClient.send(payload);
+                lastSentBestBidPrice = bestBidPrice;
+            }
+
+        } catch (err) {
+            console.error('[Listener] Error in bookTicker handler:', err.message);
         }
     });
 
-    binanceAggTradeWsClient.on('pong', () => { /* console.log('[Listener] Pong received from Binance (AggTrade Spot).'); */ });
-
-    binanceAggTradeWsClient.on('error', function error(err) {
-        console.error(`[Listener] PID: ${process.pid} --- Binance (AggTrade Spot) WebSocket error:`, err.message);
+    binanceBookTickerWsClient.on('close', () => {
+        console.log('[Listener] bookTicker WebSocket closed. Reconnecting...');
+        setTimeout(connectToBinanceBookTicker, RECONNECT_INTERVAL_MS);
     });
 
-    binanceAggTradeWsClient.on('close', function close(code, reason) {
-        const reasonStr = reason ? reason.toString() : 'N/A';
-        console.log(`[Listener] PID: ${process.pid} --- Binance (AggTrade Spot) WebSocket closed. Code: ${code}, Reason: ${reasonStr}. Reconnecting in ${RECONNECT_INTERVAL_MS / 1000}s...`);
-        if (binanceAggTradePingIntervalId) { clearInterval(binanceAggTradePingIntervalId); binanceAggTradePingIntervalId = null; }
-        binanceAggTradeWsClient = null;
-        setTimeout(connectToBinanceAggTrade, RECONNECT_INTERVAL_MS);
-    });
+    binanceBookTickerWsClient.on('error', err => console.error('[Listener] bookTicker WS error:', err.message));
 }
 
-// --- Binance Depth Stream Connection (Futures) ---
-function connectToBinanceDepth() {
-    if (binanceDepthWsClient && (binanceDepthWsClient.readyState === WebSocket.OPEN || binanceDepthWsClient.readyState === WebSocket.CONNECTING)) {
-        console.log('[Listener] Binance Depth (Futures) connection attempt skipped: already open or connecting.');
-        return;
-    }
-    console.log(`[Listener] PID: ${process.pid} --- Connecting to Binance (Depth@0ms Futures): ${binanceDepthStreamUrl}`);
-    binanceDepthWsClient = new WebSocket(binanceDepthStreamUrl);
-
-    binanceDepthWsClient.on('open', function open() {
-        console.log(`[Listener] PID: ${process.pid} --- Connected to Binance stream (btcusdt@depth5@0ms Futures).`);
-        lastSentBestBidPrice = null; // Reset on new connection
-
-        if (binanceDepthPingIntervalId) clearInterval(binanceDepthPingIntervalId);
-        binanceDepthPingIntervalId = setInterval(() => {
-            if (binanceDepthWsClient && binanceDepthWsClient.readyState === WebSocket.OPEN) {
-                try {
-                    binanceDepthWsClient.ping(() => {});
-                } catch (pingError) {
-                    console.error(`[Listener] PID: ${process.pid} --- Error sending ping to Binance (Depth Futures):`, pingError.message);
-                }
-            }
-        }, BINANCE_FUTURES_PING_INTERVAL_MS);
-    });
-
-    binanceDepthWsClient.on('message', function incoming(data) {
-        try {
-            const messageString = data.toString();
-            let parsedMessage;
-            try {
-                parsedMessage = JSON.parse(messageString);
-            } catch (parseError) {
-                // Binance Futures fstream sends text 'pong' in response to library's text 'ping'
-                if (messageString.trim().toLowerCase() === 'pong') {
-                    // console.log('[Listener] Text Pong received from Binance (Depth Futures).');
-                    return; // Handled by 'pong' event usually, but good to be safe.
-                }
-                console.warn(`[Listener] PID: ${process.pid} --- Failed to parse JSON from Binance (Depth Futures). Snippet:`, messageString.substring(0,150));
-                return;
-            }
-
-            // ** MODIFIED to handle "e":"depthUpdate" and "b" for bids based on user provided format **
-            if (parsedMessage && parsedMessage.e === "depthUpdate" && // Check event type
-                parsedMessage.b && Array.isArray(parsedMessage.b) && parsedMessage.b.length > 0 && // Check for 'b' (bids)
-                Array.isArray(parsedMessage.b[0]) && parsedMessage.b[0].length > 0 && typeof parsedMessage.b[0][0] === 'string' &&
-                typeof parsedMessage.E === 'number') {
-
-                const bestBidPriceString = parsedMessage.b[0][0]; // Access 'b' instead of 'bids'
-                const eventTime = parsedMessage.E;
-                const currentBestBidPrice = parseFloat(bestBidPriceString);
-
-                if (isNaN(currentBestBidPrice)) {
-                    console.warn(`[Listener] PID: ${process.pid} --- Invalid best bid price in depth data (Futures):`, bestBidPriceString);
-                    return;
-                }
-
-                let shouldSendData = false;
-                if (lastSentBestBidPrice === null) {
-                    shouldSendData = true;
-                } else {
-                    const priceDifference = Math.abs(currentBestBidPrice - lastSentBestBidPrice);
-                    if (priceDifference >= DEPTH_PRICE_CHANGE_THRESHOLD) {
-                        shouldSendData = true;
-                    }
-                }
-
-                if (shouldSendData) {
-                    if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
-                        const payload = {
-                            e: "depthBestBid",    // Event type for client differentiation
-                            E: eventTime,         // Event time from depth message
-                            p: bestBidPriceString,// Best bid price string
-                            F: true               // Indicates this price is from a futures stream
-                        };
-                        let payloadJsonString;
-                        try {
-                            payloadJsonString = JSON.stringify(payload);
-                        } catch (stringifyError) {
-                            console.error(`[Listener] PID: ${process.pid} --- CRITICAL: Error stringifying depth best bid data (Futures):`, stringifyError.message, stringifyError.stack);
-                            return;
-                        }
-
-                        try {
-                            internalWsClient.send(payloadJsonString);
-                            lastSentBestBidPrice = currentBestBidPrice;
-                        } catch (sendError) {
-                            console.error(`[Listener] PID: ${process.pid} --- Error sending depth best bid data (Futures) to internal receiver:`, sendError.message, sendError.stack);
-                        }
-                    }
-                }
-            } else {
-                 // Binance fstream can also send JSON pongs: {"e":"pong","T":timestamp}
-                if (parsedMessage && parsedMessage.e === 'pong') {
-                    // console.log('[Listener] JSON Pong received from Binance (Depth Futures).');
-                } else {
-                    console.warn(`[Listener] PID: ${process.pid} --- Received unexpected data structure or non-depthUpdate event from Binance (Depth Futures). Snippet:`, messageString.substring(0, 250));
-                }
-            }
-        } catch (e) {
-            console.error(`[Listener] PID: ${process.pid} --- CRITICAL ERROR in Binance (Depth Futures) message handler:`, e.message, e.stack);
-        }
-    });
-
-    binanceDepthWsClient.on('pong', () => {
-        // This handles pong frames in response to our ping frames (sent by ws library).
-        // console.log('[Listener] Pong frame received from Binance (Depth Futures).');
-    });
-
-    binanceDepthWsClient.on('error', function error(err) {
-        console.error(`[Listener] PID: ${process.pid} --- Binance (Depth Futures) WebSocket error:`, err.message);
-    });
-
-    binanceDepthWsClient.on('close', function close(code, reason) {
-        const reasonStr = reason ? reason.toString() : 'N/A';
-        console.log(`[Listener] PID: ${process.pid} --- Binance (Depth Futures) WebSocket closed. Code: ${code}, Reason: ${reasonStr}. Reconnecting in ${RECONNECT_INTERVAL_MS / 1000}s...`);
-        if (binanceDepthPingIntervalId) { clearInterval(binanceDepthPingIntervalId); binanceDepthPingIntervalId = null; }
-        binanceDepthWsClient = null;
-        setTimeout(connectToBinanceDepth, RECONNECT_INTERVAL_MS);
-    });
-}
-
-
-// --- Start the connections ---
-console.log(`[Listener] PID: ${process.pid} --- Binance listener starting...`);
-console.log(`[Listener]   AggTrade Stream (Spot): ${binanceAggTradeStreamUrl}, Threshold: ${AGG_TRADE_PRICE_CHANGE_THRESHOLD}, Output Event: 'trade'`);
-console.log(`[Listener]   Depth Stream (Futures): ${binanceDepthStreamUrl}, Best Bid Threshold: ${DEPTH_PRICE_CHANGE_THRESHOLD}, Output Event: 'depthBestBid', Futures Flag: true`);
-console.log(`[Listener]   Internal Receiver: ${internalReceiverUrl}`);
-
-connectToBinanceAggTrade();
-connectToBinanceDepth();
+// --- Initialize ---
 connectToInternalReceiver();
-
-console.log(`[Listener] PID: ${process.pid} --- Initial connection attempts initiated.`);
+connectToBinanceBookTicker();
