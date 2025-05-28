@@ -49,7 +49,7 @@ const RECONNECT_INTERVAL_MS = 5000;
 const BINANCE_SPOT_PING_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes for Binance official spot stream
 const BINANCE_FUTURES_PING_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes for Binance Futures stream
 const AGG_TRADE_PRICE_CHANGE_THRESHOLD = 1.2;
-const DEPTH_PRICE_CHANGE_THRESHOLD = 20.0;
+const DEPTH_PRICE_CHANGE_THRESHOLD = 12.5;
 
 // --- State Variables ---
 let binanceAggTradeWsClient = null;
