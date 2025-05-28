@@ -1,3 +1,4 @@
+// binance_listener.js
 
 const WebSocket = require('ws');
 
@@ -48,7 +49,7 @@ const RECONNECT_INTERVAL_MS = 5000;
 const BINANCE_SPOT_PING_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes for Binance official spot stream
 const BINANCE_FUTURES_PING_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes for Binance Futures stream
 const AGG_TRADE_PRICE_CHANGE_THRESHOLD = 1.2;
-const DEPTH_PRICE_CHANGE_THRESHOLD = 15.0;
+const DEPTH_PRICE_CHANGE_THRESHOLD = 10.0;
 
 // --- State Variables ---
 let binanceAggTradeWsClient = null;
@@ -137,11 +138,11 @@ function connectToBinanceAggTrade() {
         console.log('[Listener] Binance AggTrade connection attempt skipped: already open or connecting.');
         return;
     }
-    console.log(`[Listener] PID: ${process.pid} --- Connecting to Binance (AggTrade): ${binanceAggTradeStreamUrl}`);
+    console.log(`[Listener] PID: ${process.pid} --- Connecting to Binance (AggTrade Spot): ${binanceAggTradeStreamUrl}`);
     binanceAggTradeWsClient = new WebSocket(binanceAggTradeStreamUrl);
 
     binanceAggTradeWsClient.on('open', function open() {
-        console.log(`[Listener] PID: ${process.pid} --- Connected to Binance stream (btcusdt@aggTrade).`);
+        console.log(`[Listener] PID: ${process.pid} --- Connected to Binance stream (btcusdt@aggTrade Spot).`);
         lastSentAggTradePrice = null; // Reset on new connection
 
         if (binanceAggTradePingIntervalId) clearInterval(binanceAggTradePingIntervalId);
@@ -150,7 +151,7 @@ function connectToBinanceAggTrade() {
                 try {
                     binanceAggTradeWsClient.ping(() => {});
                 } catch (pingError) {
-                    console.error(`[Listener] PID: ${process.pid} --- Error sending ping to Binance (AggTrade):`, pingError.message);
+                    console.error(`[Listener] PID: ${process.pid} --- Error sending ping to Binance (AggTrade Spot):`, pingError.message);
                 }
             }
         }, BINANCE_SPOT_PING_INTERVAL_MS);
@@ -197,41 +198,41 @@ function connectToBinanceAggTrade() {
                     }
                 }
             } else {
-                if (messageString && !messageString.includes('"e":"pong"')) {
+                if (messageString && !messageString.includes('"e":"pong"')) { // Binance sends {"e":"pong"} for its own pongs
                     let isPotentiallyJson = false;
                     try { JSON.parse(messageString); isPotentiallyJson = true; } catch (e) { /* not json */ }
 
                     if (isPotentiallyJson && !messageString.includes('"e":"aggTrade"')) {
-                         console.warn(`[Listener] PID: ${process.pid} --- Received non-aggTrade JSON or unexpected message from Binance (AggTrade). Snippet:`, messageString.substring(0, 150));
+                         console.warn(`[Listener] PID: ${process.pid} --- Received non-aggTrade JSON or unexpected message from Binance (AggTrade Spot). Snippet:`, messageString.substring(0, 150));
                     } else if (!isPotentiallyJson) {
-                         console.warn(`[Listener] PID: ${process.pid} --- Received non-JSON message from Binance (AggTrade) (or parsing failed in check). Snippet:`, messageString.substring(0, 150));
+                         console.warn(`[Listener] PID: ${process.pid} --- Received non-JSON message from Binance (AggTrade Spot) (or parsing failed in check). Snippet:`, messageString.substring(0, 150));
                     }
                 }
             }
         } catch (e) {
-            console.error(`[Listener] PID: ${process.pid} --- CRITICAL ERROR in Binance (AggTrade) message handler:`, e.message, e.stack);
+            console.error(`[Listener] PID: ${process.pid} --- CRITICAL ERROR in Binance (AggTrade Spot) message handler:`, e.message, e.stack);
         }
     });
 
-    binanceAggTradeWsClient.on('pong', () => { /* console.log('[Listener] Pong received from Binance (AggTrade).'); */ });
+    binanceAggTradeWsClient.on('pong', () => { /* console.log('[Listener] Pong received from Binance (AggTrade Spot).'); */ });
 
     binanceAggTradeWsClient.on('error', function error(err) {
-        console.error(`[Listener] PID: ${process.pid} --- Binance (AggTrade) WebSocket error:`, err.message);
+        console.error(`[Listener] PID: ${process.pid} --- Binance (AggTrade Spot) WebSocket error:`, err.message);
     });
 
     binanceAggTradeWsClient.on('close', function close(code, reason) {
         const reasonStr = reason ? reason.toString() : 'N/A';
-        console.log(`[Listener] PID: ${process.pid} --- Binance (AggTrade) WebSocket closed. Code: ${code}, Reason: ${reasonStr}. Reconnecting in ${RECONNECT_INTERVAL_MS / 1000}s...`);
+        console.log(`[Listener] PID: ${process.pid} --- Binance (AggTrade Spot) WebSocket closed. Code: ${code}, Reason: ${reasonStr}. Reconnecting in ${RECONNECT_INTERVAL_MS / 1000}s...`);
         if (binanceAggTradePingIntervalId) { clearInterval(binanceAggTradePingIntervalId); binanceAggTradePingIntervalId = null; }
         binanceAggTradeWsClient = null;
         setTimeout(connectToBinanceAggTrade, RECONNECT_INTERVAL_MS);
     });
 }
 
-// --- Binance Depth Stream Connection ---
+// --- Binance Depth Stream Connection (Futures) ---
 function connectToBinanceDepth() {
     if (binanceDepthWsClient && (binanceDepthWsClient.readyState === WebSocket.OPEN || binanceDepthWsClient.readyState === WebSocket.CONNECTING)) {
-        console.log('[Listener] Binance Depth connection attempt skipped: already open or connecting.');
+        console.log('[Listener] Binance Depth (Futures) connection attempt skipped: already open or connecting.');
         return;
     }
     console.log(`[Listener] PID: ${process.pid} --- Connecting to Binance (Depth@0ms Futures): ${binanceDepthStreamUrl}`);
@@ -260,11 +261,18 @@ function connectToBinanceDepth() {
             try {
                 parsedMessage = JSON.parse(messageString);
             } catch (parseError) {
+                // Binance Futures fstream sends text 'pong' in response to library's text 'ping'
+                if (messageString.trim().toLowerCase() === 'pong') {
+                    // console.log('[Listener] Text Pong received from Binance (Depth Futures).');
+                    return; // Handled by 'pong' event usually, but good to be safe.
+                }
                 console.warn(`[Listener] PID: ${process.pid} --- Failed to parse JSON from Binance (Depth Futures). Snippet:`, messageString.substring(0,150));
                 return;
             }
 
-            // Expected structure: { "lastUpdateId": ..., "E": ..., "T": ..., "bids": [["price", "qty"], ...], "asks": [...] }
+            // Expected structure: { "e": "depthUpdate", "E": ..., "T": ..., "s": "BTCUSDT", "U": ..., "u": ..., "b": [["price", "qty"], ...], "a": [...] }
+            // For depth5@0ms, it might be more direct: { "lastUpdateId": ..., "E": ..., "T": ..., "bids": [["price", "qty"], ...], "asks": [...] }
+            // The provided URL btcusdt@depth5@0ms uses "bids" and "asks" directly.
             if (parsedMessage && parsedMessage.bids && Array.isArray(parsedMessage.bids) && parsedMessage.bids.length > 0 &&
                 Array.isArray(parsedMessage.bids[0]) && parsedMessage.bids[0].length > 0 && typeof parsedMessage.bids[0][0] === 'string' &&
                 typeof parsedMessage.E === 'number') {
@@ -274,7 +282,7 @@ function connectToBinanceDepth() {
                 const currentBestBidPrice = parseFloat(bestBidPriceString);
 
                 if (isNaN(currentBestBidPrice)) {
-                    console.warn(`[Listener] PID: ${process.pid} --- Invalid best bid price in depth data:`, bestBidPriceString);
+                    console.warn(`[Listener] PID: ${process.pid} --- Invalid best bid price in depth data (Futures):`, bestBidPriceString);
                     return;
                 }
 
@@ -291,15 +299,16 @@ function connectToBinanceDepth() {
                 if (shouldSendData) {
                     if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
                         const payload = {
-                            e: "depthBestBid", // Event type for client differentiation
-                            E: eventTime,      // Event time from depth message
-                            p: bestBidPriceString // Best bid price string
+                            e: "depthBestBid",    // Event type for client differentiation
+                            E: eventTime,         // Event time from depth message
+                            p: bestBidPriceString,// Best bid price string
+                            F: true               // Indicates this price is from a futures stream
                         };
                         let payloadJsonString;
                         try {
                             payloadJsonString = JSON.stringify(payload);
                         } catch (stringifyError) {
-                            console.error(`[Listener] PID: ${process.pid} --- CRITICAL: Error stringifying depth best bid data:`, stringifyError.message, stringifyError.stack);
+                            console.error(`[Listener] PID: ${process.pid} --- CRITICAL: Error stringifying depth best bid data (Futures):`, stringifyError.message, stringifyError.stack);
                             return;
                         }
 
@@ -307,22 +316,15 @@ function connectToBinanceDepth() {
                             internalWsClient.send(payloadJsonString);
                             lastSentBestBidPrice = currentBestBidPrice;
                         } catch (sendError) {
-                            console.error(`[Listener] PID: ${process.pid} --- Error sending depth best bid data to internal receiver:`, sendError.message, sendError.stack);
+                            console.error(`[Listener] PID: ${process.pid} --- Error sending depth best bid data (Futures) to internal receiver:`, sendError.message, sendError.stack);
                         }
                     }
                 }
             } else {
-                 // It's common for fstream to send pongs as JSON objects like {"e":"pong","T":1679498687278}
-                 // Or just `pong` text message for PING requests from `ws` library (which sends text PING)
+                 // Binance fstream can send JSON pongs: {"e":"pong","T":timestamp}
                 if (parsedMessage && parsedMessage.e === 'pong') {
-                    // This is a server-sent pong (often in response to a client ping if client sends JSON ping)
-                    // Or sometimes sent proactively. If our library handles PING/PONG automatically (text based), this might be ignored.
                     // console.log('[Listener] JSON Pong received from Binance (Depth Futures).');
-                } else if (messageString.trim().toLowerCase() === 'pong') {
-                    // This is a text pong, likely in response to our ws library's text ping.
-                    // console.log('[Listener] Text Pong received from Binance (Depth Futures).');
-                }
-                else {
+                } else {
                     console.warn(`[Listener] PID: ${process.pid} --- Received unexpected data structure from Binance (Depth Futures). Snippet:`, messageString.substring(0, 250));
                 }
             }
@@ -332,7 +334,7 @@ function connectToBinanceDepth() {
     });
 
     binanceDepthWsClient.on('pong', () => {
-        // This handles pong frames in response to our ping frames.
+        // This handles pong frames in response to our ping frames (sent by ws library).
         // console.log('[Listener] Pong frame received from Binance (Depth Futures).');
     });
 
@@ -352,9 +354,12 @@ function connectToBinanceDepth() {
 
 // --- Start the connections ---
 console.log(`[Listener] PID: ${process.pid} --- Binance listener starting...`);
-console.log(`[Listener]   AggTrade Stream: btcusdt@aggTrade, Threshold: ${AGG_TRADE_PRICE_CHANGE_THRESHOLD}`);
-console.log(`[Listener]   Depth Stream (Futures): btcusdt@depth5@0ms, Best Bid Threshold: ${DEPTH_PRICE_CHANGE_THRESHOLD}`);
+console.log(`[Listener]   AggTrade Stream (Spot): ${binanceAggTradeStreamUrl}, Threshold: ${AGG_TRADE_PRICE_CHANGE_THRESHOLD}, Output Event: 'trade'`);
+console.log(`[Listener]   Depth Stream (Futures): ${binanceDepthStreamUrl}, Best Bid Threshold: ${DEPTH_PRICE_CHANGE_THRESHOLD}, Output Event: 'depthBestBid', Futures Flag: true`);
+console.log(`[Listener]   Internal Receiver: ${internalReceiverUrl}`);
+
 connectToBinanceAggTrade();
 connectToBinanceDepth();
 connectToInternalReceiver();
+
 console.log(`[Listener] PID: ${process.pid} --- Initial connection attempts initiated.`);
