@@ -49,7 +49,7 @@ const RECONNECT_INTERVAL_MS = 5000;
 const BINANCE_SPOT_PING_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes for Binance official spot stream
 const BINANCE_FUTURES_PING_INTERVAL_MS = 3 * 60 * 1000; // 3 minutes for Binance Futures stream
 const AGG_TRADE_PRICE_CHANGE_THRESHOLD = 1.2;
-const DEPTH_PRICE_CHANGE_THRESHOLD = 12.5;
+const DEPTH_PRICE_CHANGE_THRESHOLD = 10.0;
 
 // --- State Variables ---
 let binanceAggTradeWsClient = null;
@@ -270,14 +270,13 @@ function connectToBinanceDepth() {
                 return;
             }
 
-            // Expected structure: { "e": "depthUpdate", "E": ..., "T": ..., "s": "BTCUSDT", "U": ..., "u": ..., "b": [["price", "qty"], ...], "a": [...] }
-            // For depth5@0ms, it might be more direct: { "lastUpdateId": ..., "E": ..., "T": ..., "bids": [["price", "qty"], ...], "asks": [...] }
-            // The provided URL btcusdt@depth5@0ms uses "bids" and "asks" directly.
-            if (parsedMessage && parsedMessage.bids && Array.isArray(parsedMessage.bids) && parsedMessage.bids.length > 0 &&
-                Array.isArray(parsedMessage.bids[0]) && parsedMessage.bids[0].length > 0 && typeof parsedMessage.bids[0][0] === 'string' &&
+            // ** MODIFIED to handle "e":"depthUpdate" and "b" for bids based on user provided format **
+            if (parsedMessage && parsedMessage.e === "depthUpdate" && // Check event type
+                parsedMessage.b && Array.isArray(parsedMessage.b) && parsedMessage.b.length > 0 && // Check for 'b' (bids)
+                Array.isArray(parsedMessage.b[0]) && parsedMessage.b[0].length > 0 && typeof parsedMessage.b[0][0] === 'string' &&
                 typeof parsedMessage.E === 'number') {
 
-                const bestBidPriceString = parsedMessage.bids[0][0];
+                const bestBidPriceString = parsedMessage.b[0][0]; // Access 'b' instead of 'bids'
                 const eventTime = parsedMessage.E;
                 const currentBestBidPrice = parseFloat(bestBidPriceString);
 
@@ -321,11 +320,11 @@ function connectToBinanceDepth() {
                     }
                 }
             } else {
-                 // Binance fstream can send JSON pongs: {"e":"pong","T":timestamp}
+                 // Binance fstream can also send JSON pongs: {"e":"pong","T":timestamp}
                 if (parsedMessage && parsedMessage.e === 'pong') {
                     // console.log('[Listener] JSON Pong received from Binance (Depth Futures).');
                 } else {
-                    console.warn(`[Listener] PID: ${process.pid} --- Received unexpected data structure from Binance (Depth Futures). Snippet:`, messageString.substring(0, 250));
+                    console.warn(`[Listener] PID: ${process.pid} --- Received unexpected data structure or non-depthUpdate event from Binance (Depth Futures). Snippet:`, messageString.substring(0, 250));
                 }
             }
         } catch (e) {
