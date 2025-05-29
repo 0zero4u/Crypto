@@ -44,7 +44,7 @@ const BYBIT_SUBSCRIPTION_PAYLOAD = { "op": "subscribe", "args": ["orderbook.1.BT
 const BYBIT_PING_PAYLOAD = { "op": "ping" };
 const BYBIT_PING_INTERVAL_MS = 20 * 1000;
 
-const MIN_REVERSAL_PRICE_DIFFERENCE = 2.0; // IMPORTANT: Adjust this based on the asset & desired sensitivity! For BTC, $2 might be small.
+const MIN_REVERSAL_PRICE_DIFFERENCE = 0.2; // IMPORTANT: Adjust this based on the asset & desired sensitivity! For BTC, $2 might be small.
 
 // --- State Variables ---
 let internalWsClient = null;
