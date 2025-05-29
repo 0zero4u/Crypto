@@ -59,10 +59,10 @@ const PRICE_CHANGE_THRESHOLD = 1.2; // For Binance aggTrade
 const BYBIT_STREAM_URL = 'wss://stream.bybit.com/v5/public/spot'; // For SPOT market
 // const BYBIT_STREAM_URL = 'wss://stream.bybit.com/v5/public/linear'; // For USDT Perpetual
 const BYBIT_SYMBOL = process.env.BYBIT_SYMBOL || 'BTCUSDT';
-const BYBIT_ORDERBOOK_TOPIC = `orderbook.50.${BYBIT_SYMBOL}`;
+const BYBIT_ORDERBOOK_TOPIC = `orderbook.20.${BYBIT_SYMBOL}`;
 const BYBIT_PING_INTERVAL_MS = 18 * 1000;
-const BYBIT_PRICE_CHANGE_THRESHOLD_USD = 0.5;
-const BYBIT_METRIC_SEND_INTERVAL_MS = 250;
+const BYBIT_PRICE_CHANGE_THRESHOLD_USD = 3.0;
+const BYBIT_METRIC_SEND_INTERVAL_MS = 25;
 
 
 // --- State Variables ---
