@@ -8,7 +8,7 @@ const SPOT_STREAM_URL = `wss://stream.binance.com:9443/ws/${SPOT_SYMBOL.toLowerC
 const FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${FUTURES_SYMBOL.toLowerCase()}@depth5@100ms`;
 const DATA_RECEIVER_INTERNAL_URL = 'ws://localhost:8082';
 
-const MIN_PROFIT_THRESHOLD_USD = 15.00;
+const MIN_PROFIT_THRESHOLD_USD = 20.00;
 const SPOT_FEE_RATE = 0.001;
 const FUTURES_FEE_RATE = 0.0004;
 const RECONNECT_INTERVAL_MS = 5000;
