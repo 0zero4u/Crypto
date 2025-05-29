@@ -43,7 +43,7 @@ const internalReceiverUrl = 'ws://localhost:8082';
 const RECONNECT_INTERVAL_MS = 5000;
 const BINANCE_PING_INTERVAL_MS = 3 * 60 * 1000;
 const PRICE_CHANGE_THRESHOLD = 1.2;
-const PUSH_INTERVAL_MS = 20; // Fixed push interval
+const PUSH_INTERVAL_MS = 25; // Fixed push interval
 
 // --- State Variables ---
 let binanceWsClient = null;
