@@ -46,8 +46,8 @@ const INTERNAL_RECEIVER_URL = 'ws://localhost:8082';
 const RECONNECT_INTERVAL_MS = 5000;
 
 // Price change thresholds for general updates (NOT for tick signals)
-const PRICE_CHANGE_THRESHOLD_BINANCE = 1.0; 
-const PRICE_CHANGE_THRESHOLD_BYBIT = 4.0;   
+const PRICE_CHANGE_THRESHOLD_BINANCE = 1.2; 
+const PRICE_CHANGE_THRESHOLD_BYBIT = 3.0;   
 
 // Binance Configuration
 const BINANCE_STREAM_URL = 'wss://stream.binance.com:9443/ws/btcusdt@aggTrade';
