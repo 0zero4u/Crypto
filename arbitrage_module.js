@@ -50,7 +50,7 @@ const ARB_PING_INTERVAL_MS = 3 * 60 * 1000;
 const DESIRED_PROFIT_THRESHOLD_USD = 5.0;    // Entry threshold for a new signal
 const CLEARANCE_PROFIT_FLOOR_USD = 1.5;     // Floor to keep an existing signal active
 const TOTAL_FEES_PER_UNIT_USD = 0.2;
-const ARBITRAGE_CHECK_INTERVAL_MS = 50;
+const ARBITRAGE_CHECK_INTERVAL_MS = 23;
 
 // --- Arbitrage State Variables ---
 let internalWsClient = null;
