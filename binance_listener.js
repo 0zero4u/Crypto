@@ -69,7 +69,7 @@ const FUTURES_BOOKTICKER_URL = 'wss://fstream.binance.com/ws/btcusdt@bookTicker'
 const ARB_RECONNECT_INTERVAL_MS = 5000;
 const ARB_PING_INTERVAL_MS = 3 * 60 * 1000;
 const TIMESTAMP_TOLERANCE_MS = 300; // Max allowed time difference between spot and futures data for arb check
-const DESIRED_PROFIT_THRESHOLD_USD = 0.5; // Example: $0.5 profit target per unit
+const DESIRED_PROFIT_THRESHOLD_USD = 10.0; // Example: $0.5 profit target per unit
 const TOTAL_FEES_PER_UNIT_USD = 0.2; // Example: $0.2 combined fees per unit (e.g., per BTC)
 
 // --- AggTrade Listener State Variables ---
