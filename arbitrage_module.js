@@ -1,8 +1,8 @@
-// arbitrage_module.js
+// arbitrage_module.js (with reduced logging)
 
 const WebSocket = require('ws');
 
-// --- Global Error Handlers ---
+// --- Global Error Handlers (Error logs retained) ---
 process.on('uncaughtException', (err, origin) => {
     console.error(`[Arbitrage-Module] PID: ${process.pid} --- FATAL: UNCAUGHT EXCEPTION`);
     console.error(err.stack || err);
@@ -48,15 +48,15 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 // --- Arbitrage Configuration ---
-const internalReceiverUrl = 'ws://localhost:8082'; // Your internal client address
+const internalReceiverUrl = 'ws://localhost:8082';
 const SPOT_BOOKTICKER_URL = 'wss://stream.binance.com:9443/ws/btcusdt@bookTicker';
-const FUTURES_BOOKTICKER_URL = 'wss://fstream.binance.com/ws/btcusdt@bookTicker'; // For USDT-M Perpetual Futures
+const FUTURES_BOOKTICKER_URL = 'wss://fstream.binance.com/ws/btcusdt@bookTicker';
 const ARB_RECONNECT_INTERVAL_MS = 5000;
 const ARB_PING_INTERVAL_MS = 3 * 60 * 1000;
-const DESIRED_PROFIT_THRESHOLD_USD = 5.0; // Desired profit *from the deviation*
-const TOTAL_FEES_PER_UNIT_USD = 0.2; // IMPORTANT: Review this fixed value.
-const ARBITRAGE_CHECK_INTERVAL_MS = 10; // How often to check for arbitrage opportunities
-const NATURAL_BASIS_SPOT_OVER_FUTURES = 50.0; // Example value
+const DESIRED_PROFIT_THRESHOLD_USD = 5.0;
+const TOTAL_FEES_PER_UNIT_USD = 0.2;
+const ARBITRAGE_CHECK_INTERVAL_MS = 10;
+const NATURAL_BASIS_SPOT_OVER_FUTURES = 50.0;
 
 // --- Arbitrage State Variables ---
 let internalWsClient = null;
@@ -68,19 +68,19 @@ let arbitrageCheckIntervalId = null;
 
 let latestSpotData = { bestBid: null, bestAsk: null, timestamp: null };
 let latestFuturesData = { bestBid: null, bestAsk: null, timestamp: null };
-let lastSentArbitrageType = null; // Tracks the type of last sent signal
+let lastSentArbitrageType = null;
 
-// --- Internal Receiver Connection (for Arbitrage Signals) ---
+// --- Internal Receiver Connection ---
 function connectToInternalReceiver() {
     if (internalWsClient && (internalWsClient.readyState === WebSocket.OPEN || internalWsClient.readyState === WebSocket.CONNECTING)) {
         return;
     }
+    // Log connection attempt, useful for diagnosing repeated failures
     console.log(`[Arbitrage-Module] PID: ${process.pid} --- Connecting to internal receiver at ${internalReceiverUrl}...`);
     internalWsClient = new WebSocket(internalReceiverUrl);
 
     internalWsClient.on('open', () => {
-        console.log(`[Arbitrage-Module] PID: ${process.pid} --- Connected to internal receiver.`);
-        // No specific action needed on open for arbitrage signals beyond logging
+        // "Connected to..." log removed for brevity. Successful connection is implied by lack of errors.
     });
 
     internalWsClient.on('error', (err) => {
@@ -88,19 +88,20 @@ function connectToInternalReceiver() {
     });
 
     internalWsClient.on('close', (code, reason) => {
+        // Log disconnection, important for diagnostics
         console.log(`[Arbitrage-Module] PID: ${process.pid} --- Disconnected from internal receiver. Code: ${code}, Reason: ${reason ? reason.toString() : 'N/A'}`);
         internalWsClient = null;
-        setTimeout(connectToInternalReceiver, ARB_RECONNECT_INTERVAL_MS); // Use ARB_RECONNECT for consistency
+        setTimeout(connectToInternalReceiver, ARB_RECONNECT_INTERVAL_MS);
     });
 }
 
-
 // --- Arbitrage Logic Core (Called by Interval) ---
 function performArbitrageCheckAndSignal() {
-    if (!latestSpotData.bestBid || !latestSpotData.bestAsk || !latestSpotData.timestamp ||
-        !latestFuturesData.bestBid || !latestFuturesData.bestAsk || !latestFuturesData.timestamp) {
+    if (!latestSpotData.bestBid || !latestSpotData.bestAsk ||
+        !latestFuturesData.bestBid || !latestFuturesData.bestAsk) {
         if (lastSentArbitrageType !== null) {
-            console.log(`[Arbitrage-Module] PID: ${process.pid} --- Opportunity (${lastSentArbitrageType}) cleared due to incomplete market data.`);
+            // This log is important as it indicates a change in state or data quality
+            console.log(`[Arbitrage-Module] PID: ${process.pid} --- Opportunity (${lastSentArbitrageType}) cleared due to incomplete market data (prices).`);
             lastSentArbitrageType = null;
         }
         return;
@@ -124,15 +125,7 @@ function performArbitrageCheckAndSignal() {
         spotTradePrice = latestSpotData.bestBid;
         futuresTradePrice = latestFuturesData.bestAsk;
         arbSignalPayload = {
-            arb_signal: {
-                type: "arbitrage_opportunity", // Add a type field
-                sell_market: "spot",
-                buy_market: "futures",
-                net_profit_usd: parseFloat(identifiedNetProfit.toFixed(4)),
-                spot_price_trade: spotTradePrice,
-                futures_price_trade: futuresTradePrice,
-                timestamp: Date.now() // Add a timestamp for the signal
-            }
+            as: { sell: "spot", buy: "futures", np: parseFloat(identifiedNetProfit.toFixed(4)), spt: spotTradePrice, fpt: futuresTradePrice }
         };
     } else if (deviationProfitFuturesSellSpotBuy > DESIRED_PROFIT_THRESHOLD_USD) {
         currentOpportunityType = "scenario2_SellFuturesBuySpot_Deviation";
@@ -140,15 +133,7 @@ function performArbitrageCheckAndSignal() {
         spotTradePrice = latestSpotData.bestAsk;
         futuresTradePrice = latestFuturesData.bestBid;
         arbSignalPayload = {
-            arb_signal: {
-                type: "arbitrage_opportunity", // Add a type field
-                sell_market: "futures",
-                buy_market: "spot",
-                net_profit_usd: parseFloat(identifiedNetProfit.toFixed(4)),
-                spot_price_trade: spotTradePrice,
-                futures_price_trade: futuresTradePrice,
-                timestamp: Date.now() // Add a timestamp for the signal
-            }
+            as: { sell: "futures", buy: "spot", np: parseFloat(identifiedNetProfit.toFixed(4)), spt: spotTradePrice, fpt: futuresTradePrice }
         };
     }
 
@@ -158,17 +143,21 @@ function performArbitrageCheckAndSignal() {
                 try {
                     const messageString = JSON.stringify(arbSignalPayload);
                     internalWsClient.send(messageString);
-                    console.log(`[Arbitrage-Module] PID: ${process.pid} --- SENT Signal. Type: ${currentOpportunityType}, Sell: ${arbSignalPayload.arb_signal.sell_market} (SpotP: ${arbSignalPayload.arb_signal.spot_price_trade}, FuturesP: ${arbSignalPayload.arb_signal.futures_price_trade}), Buy: ${arbSignalPayload.arb_signal.buy_market}, Deviation Profit: $${identifiedNetProfit.toFixed(4)}`);
+                    // This log is CRITICAL - indicates a signal was sent.
+                    console.log(`[Arbitrage-Module] PID: ${process.pid} --- SENT Signal. Type: ${currentOpportunityType}, Sell: ${arbSignalPayload.as.sell} (SpotP: ${arbSignalPayload.as.spt}, FuturesP: ${arbSignalPayload.as.fpt}), Buy: ${arbSignalPayload.as.buy}, Deviation Profit: $${identifiedNetProfit.toFixed(4)}`);
                     lastSentArbitrageType = currentOpportunityType;
                 } catch (error) {
                     console.error(`[Arbitrage-Module] PID: ${process.pid} --- Error stringifying or sending arbitrage opportunity:`, error.message, error.stack);
                 }
             } else {
+                // This warning is important.
                 console.warn(`[Arbitrage-Module] PID: ${process.pid} --- Detected ${currentOpportunityType} opportunity but internal client NOT OPEN. Deviation Profit: $${identifiedNetProfit.toFixed(4)}. Signal not sent.`);
             }
         }
+        // The previously commented-out debug log for "opportunity persists" is naturally removed.
     } else {
         if (lastSentArbitrageType !== null) {
+            // This log is important as it indicates a change in state.
             console.log(`[Arbitrage-Module] PID: ${process.pid} --- Previously signaled arbitrage opportunity (${lastSentArbitrageType}) has now disappeared or fallen below threshold.`);
             lastSentArbitrageType = null;
         }
@@ -184,7 +173,7 @@ function connectToSpotBookTicker() {
     spotWsClient = new WebSocket(SPOT_BOOKTICKER_URL);
 
     spotWsClient.on('open', function open() {
-        console.log(`[Arbitrage-Module] PID: ${process.pid} --- Connected to Spot BookTicker.`);
+        // "Connected to..." log removed for brevity.
         if (spotPingIntervalId) clearInterval(spotPingIntervalId);
         spotPingIntervalId = setInterval(() => {
             if (spotWsClient && spotWsClient.readyState === WebSocket.OPEN) {
@@ -219,7 +208,7 @@ function connectToSpotBookTicker() {
         }
     });
 
-    spotWsClient.on('pong', () => { });
+    spotWsClient.on('pong', () => { }); // No logging for pongs by default
 
     spotWsClient.on('error', function error(err) {
         console.error(`[Arbitrage-Module] PID: ${process.pid} --- Spot BookTicker WebSocket error:`, err.message);
@@ -243,12 +232,11 @@ function connectToFuturesBookTicker() {
     futuresWsClient = new WebSocket(FUTURES_BOOKTICKER_URL);
 
     futuresWsClient.on('open', function open() {
-        console.log(`[Arbitrage-Module] PID: ${process.pid} --- Connected to Futures BookTicker.`);
+        // "Connected to..." log removed for brevity.
         if (futuresPingIntervalId) clearInterval(futuresPingIntervalId);
         futuresPingIntervalId = setInterval(() => {
             if (futuresWsClient && futuresWsClient.readyState === WebSocket.OPEN) {
                 try {
-                    // Futures stream typically sends pong as a message, but ping frames should still be accepted.
                     futuresWsClient.ping(() => {});
                 } catch (pingError) {
                     console.error(`[Arbitrage-Module] PID: ${process.pid} --- Error sending ping to Futures BookTicker:`, pingError.message);
@@ -260,12 +248,8 @@ function connectToFuturesBookTicker() {
     futuresWsClient.on('message', function incoming(data) {
         try {
             const messageString = data.toString();
-            // Binance futures sends pongs as messages: {"e":"pong","T":1620835200000}
-            // Or sometimes just `pong` for certain types of keepalives.
-            // It's safer to parse and check for a known pong structure or ignore simple "pong" messages.
             if (messageString.includes('"e":"pong"') || messageString.trim().toLowerCase() === 'pong') {
-                // console.debug(`[Arbitrage-Module] PID: ${process.pid} --- Pong message received from Futures BookTicker.`);
-                return;
+                return; // No logging for pong messages
             }
             const tickerData = JSON.parse(messageString);
 
@@ -286,11 +270,7 @@ function connectToFuturesBookTicker() {
         }
     });
 
-    // Spot sends actual pong frames, futures often sends pong as a message.
-    // Still, listen for actual pong frames in case behavior changes or for other types of connections.
-    futuresWsClient.on('pong', () => {
-        // console.debug(`[Arbitrage-Module] PID: ${process.pid} --- Pong frame received from Futures BookTicker.`);
-    });
+    futuresWsClient.on('pong', () => { }); // No logging for pongs by default
 
     futuresWsClient.on('error', function error(err) {
         console.error(`[Arbitrage-Module] PID: ${process.pid} --- Futures BookTicker WebSocket error:`, err.message);
@@ -305,10 +285,10 @@ function connectToFuturesBookTicker() {
     });
 }
 
-// --- Start the connections and intervals ---
+// --- Start the connections and intervals (Startup logs retained) ---
 console.log(`[Arbitrage-Module] PID: ${process.pid} --- Arbitrage Module starting...`);
 
-connectToInternalReceiver(); // For sending out arbitrage signals
+connectToInternalReceiver();
 connectToSpotBookTicker();
 connectToFuturesBookTicker();
 
