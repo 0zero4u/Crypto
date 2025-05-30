@@ -1,4 +1,4 @@
-// arbitrage_module.js (with reduced logging)
+// arbitrage_module.js 
 
 const WebSocket = require('ws');
 
