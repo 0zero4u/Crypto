@@ -1,3 +1,4 @@
+
 // arbitrage_module.js
 
 const WebSocket = require('ws');
@@ -56,7 +57,7 @@ const ARB_PING_INTERVAL_MS = 3 * 60 * 1000;
 const DESIRED_PROFIT_THRESHOLD_USD = 8.0;
 const TOTAL_FEES_PER_UNIT_USD = 0.2;
 const ARBITRAGE_CHECK_INTERVAL_MS = 20;
-const NATURAL_BASIS_SPOT_OVER_FUTURES = 51.0;
+const NATURAL_BASIS_SPOT_OVER_FUTURES = 52.0;
 
 // --- Arbitrage State Variables ---
 let internalWsClient = null;
