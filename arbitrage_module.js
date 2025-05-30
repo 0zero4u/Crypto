@@ -46,7 +46,7 @@ const FUTURES_BOOKTICKER_URL = 'wss://fstream.binance.com/ws/btcusdt@bookTicker'
 const MARK_PRICE_STREAM_URL = 'wss://fstream.binance.com/ws/btcusdt@markPrice@1s';
 const ARB_RECONNECT_INTERVAL_MS = 5000;
 const ARB_PING_INTERVAL_MS = 3 * 60 * 1000;
-const DESIRED_PROFIT_THRESHOLD_USD = 5.0;
+const DESIRED_PROFIT_THRESHOLD_USD = 2.5;
 const TOTAL_FEES_PER_UNIT_USD = 0.2;
 const ARBITRAGE_CHECK_INTERVAL_MS = 20;
 
