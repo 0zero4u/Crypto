@@ -63,19 +63,19 @@ const internalReceiverUrl = 'ws://localhost:8082'; // Your internal client addre
 const RECONNECT_INTERVAL_MS = 5000;
 const BINANCE_PING_INTERVAL_MS = 3 * 60 * 1000;
 const PRICE_CHANGE_THRESHOLD = 1.2; // For aggTrade listener push to internal client
-const PUSH_INTERVAL_MS = 50.0; // Fixed push interval for aggTrade data
+const PUSH_INTERVAL_MS = 25.0; // Fixed push interval for aggTrade data
 
 // --- Arbitrage Configuration ---
 const SPOT_BOOKTICKER_URL = 'wss://stream.binance.com:9443/ws/btcusdt@bookTicker';
 const FUTURES_BOOKTICKER_URL = 'wss://fstream.binance.com/ws/btcusdt@bookTicker'; // For USDT-M Perpetual Futures
 const ARB_RECONNECT_INTERVAL_MS = 5000;
 const ARB_PING_INTERVAL_MS = 3 * 60 * 1000;
-const DESIRED_PROFIT_THRESHOLD_USD = 65.0;
+const DESIRED_PROFIT_THRESHOLD_USD = 50.0;
 // IMPORTANT: Review TOTAL_FEES_PER_UNIT_USD. This fixed USD value per BTC is likely inaccurate.
 // Real fees are percentage-based and should be calculated dynamically using current prices.
 // Example: (spot_price * spot_fee_rate) + (futures_price * futures_fee_rate)
 const TOTAL_FEES_PER_UNIT_USD = 0.2;
-const ARBITRAGE_CHECK_INTERVAL_MS = 50; // How often to check for arbitrage opportunities
+const ARBITRAGE_CHECK_INTERVAL_MS = 10; // How often to check for arbitrage opportunities
 
 // --- AggTrade Listener State Variables ---
 let binanceWsClient = null;
