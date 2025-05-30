@@ -48,7 +48,7 @@ const ARB_RECONNECT_INTERVAL_MS = 5000;
 const ARB_PING_INTERVAL_MS = 3 * 60 * 1000;
 
 const DESIRED_PROFIT_THRESHOLD_USD = 5.0;    // Entry threshold for a new signal
-const CLEARANCE_PROFIT_FLOOR_USD = 15.0;     // Floor to keep an existing signal active
+const CLEARANCE_PROFIT_FLOOR_USD = 20.0;     // Floor to keep an existing signal active
 const TOTAL_FEES_PER_UNIT_USD = 0.2;
 const ARBITRAGE_CHECK_INTERVAL_MS = 20;
 
