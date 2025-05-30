@@ -4,10 +4,13 @@
   "description": "Node.js scripts to listen to Binance WebSocket stream for BTCUSDT depth and relay data.",
   "main": "binance_listener.js",
   "scripts": {
-    "start-listener": "node binance_listener.js",
+    "start-aggtrade-listener": "node binance_listener.js",
+    "start-arbitrage-module": "node arbitrage_module.js",
     "start-receiver": "node data_receiver_server.js",
-    "pm2-start-listener": "pm2 start binance_listener.js --name binance-listener-prod",
+    "pm2-start-aggtrade": "pm2 start binance_listener.js --name aggtrade-listener-prod",
+    "pm2-start-arbitrage": "pm2 start arbitrage_module.js --name arbitrage-module-prod",
     "pm2-start-receiver": "pm2 start data_receiver_server.js --name data-receiver-prod",
+    "pm2-start-all": "npm run pm2-start-aggtrade && npm run pm2-start-arbitrage && npm run pm2-start-receiver",
     "pm2-list": "pm2 list",
     "pm2-stop-all": "pm2 stop all && pm2 delete all",
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -19,12 +22,12 @@
     "nodejs",
     "depth",
     "btcusdt",
-    "msgpack"
+    "msgpack",
+    "arbitrage"
   ],
   "author": "0zero4u",
   "license": "ISC",
   "dependencies": {
-    "ws": "^8.17.0",
-    "msgpack-lite": "^0.1.26"
+    "ws": "^8.17.0"
   }
 }
