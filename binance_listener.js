@@ -45,7 +45,7 @@ const internalReceiverUrl = 'ws://localhost:8082'; // Your internal client addre
 const RECONNECT_INTERVAL_MS = 5000;
 const BINANCE_PING_INTERVAL_MS = 3 * 60 * 1000;
 const PRICE_CHANGE_THRESHOLD = 1.2; // For aggTrade listener push to internal client
-const PUSH_INTERVAL_MS = 25.0; // Fixed push interval for aggTrade data
+const PUSH_INTERVAL_MS = 25; // Fixed push interval for aggTrade data
 
 // --- AggTrade Listener State Variables ---
 let binanceWsClient = null;
