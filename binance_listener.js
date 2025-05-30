@@ -1,4 +1,4 @@
---- START OF FILE binance_listener (4).js ---
+
 
 // binance_listener.js
 
@@ -520,5 +520,3 @@ if (arbitrageCheckIntervalId) {
 }
 arbitrageCheckIntervalId = setInterval(performArbitrageCheckAndSignal, ARBITRAGE_CHECK_INTERVAL_MS);
 console.log(`[Arbitrage] PID: ${process.pid} --- Arbitrage check interval started, checking every ${ARBITRAGE_CHECK_INTERVAL_MS}ms.`);
-
---- END OF FILE binance_listener (4).js ---
