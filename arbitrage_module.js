@@ -1,4 +1,4 @@
-// arbitrage_module.js 
+// arbitrage_module.js
 
 const WebSocket = require('ws');
 
@@ -68,19 +68,18 @@ let arbitrageCheckIntervalId = null;
 
 let latestSpotData = { bestBid: null, bestAsk: null, timestamp: null };
 let latestFuturesData = { bestBid: null, bestAsk: null, timestamp: null };
-let lastSentArbitrageType = null;
+let lastSentArbitrageType = null; // Stores the type of the last *sent* signal ("scenario1_...", "scenario2_...", or null if clear signal sent)
 
 // --- Internal Receiver Connection ---
 function connectToInternalReceiver() {
     if (internalWsClient && (internalWsClient.readyState === WebSocket.OPEN || internalWsClient.readyState === WebSocket.CONNECTING)) {
         return;
     }
-    // Log connection attempt, useful for diagnosing repeated failures
     console.log(`[Arbitrage-Module] PID: ${process.pid} --- Connecting to internal receiver at ${internalReceiverUrl}...`);
     internalWsClient = new WebSocket(internalReceiverUrl);
 
     internalWsClient.on('open', () => {
-        // "Connected to..." log removed for brevity. Successful connection is implied by lack of errors.
+        // "Connected to..." log removed for brevity.
     });
 
     internalWsClient.on('error', (err) => {
@@ -88,7 +87,6 @@ function connectToInternalReceiver() {
     });
 
     internalWsClient.on('close', (code, reason) => {
-        // Log disconnection, important for diagnostics
         console.log(`[Arbitrage-Module] PID: ${process.pid} --- Disconnected from internal receiver. Code: ${code}, Reason: ${reason ? reason.toString() : 'N/A'}`);
         internalWsClient = null;
         setTimeout(connectToInternalReceiver, ARB_RECONNECT_INTERVAL_MS);
@@ -97,16 +95,29 @@ function connectToInternalReceiver() {
 
 // --- Arbitrage Logic Core (Called by Interval) ---
 function performArbitrageCheckAndSignal() {
+    const clearSignalPayload = { as: null }; // Define the "clear" signal payload
+
     if (!latestSpotData.bestBid || !latestSpotData.bestAsk ||
         !latestFuturesData.bestBid || !latestFuturesData.bestAsk) {
-        if (lastSentArbitrageType !== null) {
-            // This log is important as it indicates a change in state or data quality
+        // Market data is incomplete
+        if (lastSentArbitrageType !== null) { // If an opportunity was previously active
             console.log(`[Arbitrage-Module] PID: ${process.pid} --- Opportunity (${lastSentArbitrageType}) cleared due to incomplete market data (prices).`);
-            lastSentArbitrageType = null;
+            if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
+                try {
+                    internalWsClient.send(JSON.stringify(clearSignalPayload));
+                    console.log(`[Arbitrage-Module] PID: ${process.pid} --- SENT Clear Signal (due to incomplete market data). Previously active: ${lastSentArbitrageType}.`);
+                } catch (error) {
+                    console.error(`[Arbitrage-Module] PID: ${process.pid} --- Error sending clear signal (incomplete data):`, error.message, error.stack);
+                }
+            } else {
+                 console.warn(`[Arbitrage-Module] PID: ${process.pid} --- Incomplete market data for ${lastSentArbitrageType}, but internal client NOT OPEN. Clear signal not sent.`);
+            }
+            lastSentArbitrageType = null; // Mark that a clear state has been signaled (or attempted)
         }
-        return;
+        return; // Exit early as no valid calculation can be made
     }
 
+    // Market data is complete, proceed with arbitrage calculation
     let currentOpportunityType = null;
     let arbSignalPayload = null;
     let identifiedNetProfit = 0;
@@ -137,30 +148,43 @@ function performArbitrageCheckAndSignal() {
         };
     }
 
+    // Now, decide whether to send an opportunity signal or a clear signal
     if (currentOpportunityType) {
+        // An opportunity IS currently identified
         if (currentOpportunityType !== lastSentArbitrageType) {
+            // It's a new opportunity or a different type of opportunity than last sent
             if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
                 try {
                     const messageString = JSON.stringify(arbSignalPayload);
                     internalWsClient.send(messageString);
-                    // This log is CRITICAL - indicates a signal was sent.
                     console.log(`[Arbitrage-Module] PID: ${process.pid} --- SENT Signal. Type: ${currentOpportunityType}, Sell: ${arbSignalPayload.as.sell} (SpotP: ${arbSignalPayload.as.spt}, FuturesP: ${arbSignalPayload.as.fpt}), Buy: ${arbSignalPayload.as.buy}, Deviation Profit: $${identifiedNetProfit.toFixed(4)}`);
                     lastSentArbitrageType = currentOpportunityType;
                 } catch (error) {
                     console.error(`[Arbitrage-Module] PID: ${process.pid} --- Error stringifying or sending arbitrage opportunity:`, error.message, error.stack);
                 }
             } else {
-                // This warning is important.
                 console.warn(`[Arbitrage-Module] PID: ${process.pid} --- Detected ${currentOpportunityType} opportunity but internal client NOT OPEN. Deviation Profit: $${identifiedNetProfit.toFixed(4)}. Signal not sent.`);
             }
         }
-        // The previously commented-out debug log for "opportunity persists" is naturally removed.
+        // If currentOpportunityType === lastSentArbitrageType, do nothing (opportunity persists with same type, no flood)
     } else {
+        // NO opportunity currently identified based on calculations
         if (lastSentArbitrageType !== null) {
-            // This log is important as it indicates a change in state.
-            console.log(`[Arbitrage-Module] PID: ${process.pid} --- Previously signaled arbitrage opportunity (${lastSentArbitrageType}) has now disappeared or fallen below threshold.`);
-            lastSentArbitrageType = null;
+            // An opportunity WAS active (a signal was sent), but now it's gone or below threshold. Send a clear signal.
+            if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
+                try {
+                    internalWsClient.send(JSON.stringify(clearSignalPayload));
+                    console.log(`[Arbitrage-Module] PID: ${process.pid} --- SENT Clear Signal. Previously signaled opportunity (${lastSentArbitrageType}) has now disappeared or fallen below threshold.`);
+                    lastSentArbitrageType = null; // Mark that a clear state has been signaled
+                } catch (error) {
+                    console.error(`[Arbitrage-Module] PID: ${process.pid} --- Error stringifying or sending clear signal (opportunity disappeared):`, error.message, error.stack);
+                }
+            } else {
+                console.warn(`[Arbitrage-Module] PID: ${process.pid} --- Previously signaled opportunity (${lastSentArbitrageType}) disappeared, but internal client NOT OPEN. Clear signal not sent.`);
+                lastSentArbitrageType = null; // Still update state to reflect opportunity is gone
+            }
         }
+        // If lastSentArbitrageType was already null, do nothing (still no opportunity, no change in signaled state)
     }
 }
 
@@ -173,7 +197,6 @@ function connectToSpotBookTicker() {
     spotWsClient = new WebSocket(SPOT_BOOKTICKER_URL);
 
     spotWsClient.on('open', function open() {
-        // "Connected to..." log removed for brevity.
         if (spotPingIntervalId) clearInterval(spotPingIntervalId);
         spotPingIntervalId = setInterval(() => {
             if (spotWsClient && spotWsClient.readyState === WebSocket.OPEN) {
@@ -197,6 +220,8 @@ function connectToSpotBookTicker() {
 
                 if (isNaN(newSpotBestBid) || isNaN(newSpotBestAsk)) {
                     console.warn(`[Arbitrage-Module] PID: ${process.pid} --- Invalid price in Spot BookTicker data: Bid=${tickerData.b}, Ask=${tickerData.a}`);
+                    // Potentially clear latestSpotData to trigger incomplete data check if critical
+                    // latestSpotData.bestBid = null; latestSpotData.bestAsk = null;
                     return;
                 }
                 latestSpotData.bestBid = newSpotBestBid;
@@ -208,7 +233,7 @@ function connectToSpotBookTicker() {
         }
     });
 
-    spotWsClient.on('pong', () => { }); // No logging for pongs by default
+    spotWsClient.on('pong', () => { });
 
     spotWsClient.on('error', function error(err) {
         console.error(`[Arbitrage-Module] PID: ${process.pid} --- Spot BookTicker WebSocket error:`, err.message);
@@ -218,7 +243,7 @@ function connectToSpotBookTicker() {
         console.log(`[Arbitrage-Module] PID: ${process.pid} --- Spot BookTicker WebSocket closed. Code: ${code}, Reason: ${reason ? reason.toString() : 'N/A'}`);
         if (spotPingIntervalId) { clearInterval(spotPingIntervalId); spotPingIntervalId = null; }
         spotWsClient = null;
-        latestSpotData = { bestBid: null, bestAsk: null, timestamp: null };
+        latestSpotData = { bestBid: null, bestAsk: null, timestamp: null }; // Crucial for data integrity checks
         setTimeout(connectToSpotBookTicker, ARB_RECONNECT_INTERVAL_MS);
     });
 }
@@ -232,7 +257,6 @@ function connectToFuturesBookTicker() {
     futuresWsClient = new WebSocket(FUTURES_BOOKTICKER_URL);
 
     futuresWsClient.on('open', function open() {
-        // "Connected to..." log removed for brevity.
         if (futuresPingIntervalId) clearInterval(futuresPingIntervalId);
         futuresPingIntervalId = setInterval(() => {
             if (futuresWsClient && futuresWsClient.readyState === WebSocket.OPEN) {
@@ -249,7 +273,7 @@ function connectToFuturesBookTicker() {
         try {
             const messageString = data.toString();
             if (messageString.includes('"e":"pong"') || messageString.trim().toLowerCase() === 'pong') {
-                return; // No logging for pong messages
+                return;
             }
             const tickerData = JSON.parse(messageString);
 
@@ -259,6 +283,8 @@ function connectToFuturesBookTicker() {
 
                 if (isNaN(newFuturesBestBid) || isNaN(newFuturesBestAsk)) {
                     console.warn(`[Arbitrage-Module] PID: ${process.pid} --- Invalid price in Futures BookTicker data: Bid=${tickerData.b}, Ask=${tickerData.a}`);
+                    // Potentially clear latestFuturesData to trigger incomplete data check
+                    // latestFuturesData.bestBid = null; latestFuturesData.bestAsk = null;
                     return;
                 }
                 latestFuturesData.bestBid = newFuturesBestBid;
@@ -270,7 +296,7 @@ function connectToFuturesBookTicker() {
         }
     });
 
-    futuresWsClient.on('pong', () => { }); // No logging for pongs by default
+    futuresWsClient.on('pong', () => { });
 
     futuresWsClient.on('error', function error(err) {
         console.error(`[Arbitrage-Module] PID: ${process.pid} --- Futures BookTicker WebSocket error:`, err.message);
@@ -280,12 +306,12 @@ function connectToFuturesBookTicker() {
         console.log(`[Arbitrage-Module] PID: ${process.pid} --- Futures BookTicker WebSocket closed. Code: ${code}, Reason: ${reason ? reason.toString() : 'N/A'}`);
         if (futuresPingIntervalId) { clearInterval(futuresPingIntervalId); futuresPingIntervalId = null; }
         futuresWsClient = null;
-        latestFuturesData = { bestBid: null, bestAsk: null, timestamp: null };
+        latestFuturesData = { bestBid: null, bestAsk: null, timestamp: null }; // Crucial for data integrity checks
         setTimeout(connectToFuturesBookTicker, ARB_RECONNECT_INTERVAL_MS);
     });
 }
 
-// --- Start the connections and intervals (Startup logs retained) ---
+// --- Start the connections and intervals ---
 console.log(`[Arbitrage-Module] PID: ${process.pid} --- Arbitrage Module starting...`);
 
 connectToInternalReceiver();
