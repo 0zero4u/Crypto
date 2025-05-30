@@ -1,5 +1,6 @@
 // binance_listener.js
 
+//Don't add any additional logs , it's not allowed 
 const WebSocket = require('ws');
 
 // --- Global Error Handlers ---
