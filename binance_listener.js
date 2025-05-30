@@ -75,7 +75,7 @@ const DESIRED_PROFIT_THRESHOLD_USD = 15.0;
 // Real fees are percentage-based and should be calculated dynamically using current prices.
 // Example: (spot_price * spot_fee_rate) + (futures_price * futures_fee_rate)
 const TOTAL_FEES_PER_UNIT_USD = 0.2;
-const ARBITRAGE_CHECK_INTERVAL_MS = 20; // How often to check for arbitrage opportunities
+const ARBITRAGE_CHECK_INTERVAL_MS = 50; // How often to check for arbitrage opportunities
 
 // --- AggTrade Listener State Variables ---
 let binanceWsClient = null;
