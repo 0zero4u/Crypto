@@ -72,7 +72,7 @@ const SPOT_BOOKTICKER_URL = 'wss://stream.binance.com:9443/ws/btcusdt@bookTicker
 const FUTURES_BOOKTICKER_URL = 'wss://fstream.binance.com/ws/btcusdt@bookTicker'; // For USDT-M Perpetual Futures
 const ARB_RECONNECT_INTERVAL_MS = 5000;
 const ARB_PING_INTERVAL_MS = 3 * 60 * 1000;
-const DESIRED_PROFIT_THRESHOLD_USD = 10.0; // Desired profit *from the deviation*
+const DESIRED_PROFIT_THRESHOLD_USD = 5.0; // Desired profit *from the deviation*
 // IMPORTANT: Review TOTAL_FEES_PER_UNIT_USD. This fixed USD value per BTC is likely inaccurate.
 // Real fees are percentage-based and should be calculated dynamically using current prices.
 // Example: (spot_price * spot_fee_rate) + (futures_price * futures_fee_rate)
