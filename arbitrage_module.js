@@ -54,7 +54,7 @@ const ARBITRAGE_CHECK_INTERVAL_MS = 100; // Increased from 25ms
 
 // --- Book Skew Configuration ---
 const FAVORABLE_SKEW_RATIO_SELL_SIDE_HEAVY = 1.5; // For selling asset X, want X_AskQty / X_BidQty >= this
-const FAVORABLE_SKEW_RATIO_BUY_SIDE_HEAVY = 1.5;  // For buying asset X, want X_BidQty / X_AskQty >= this
+const FAVORABLE_SKEW_RATIO_BUY_SIDE_HEAVY = 1.13;  // For buying asset X, want X_BidQty / X_AskQty >= this
 const MIN_TOTAL_TOP_LEVEL_QTY_FOR_SKEW_CHECK = 0.1; // Min (BidQ+AskQ) for skew check to be valid (e.g. 0.1 BTC)
 const PENALTY_FOR_UNFAVORABLE_SKEW_USD = 1.0; // Subtract this from profit if combined skew is not ideal.
                                              // Set to a high value (e.g., 9999) for strict veto, 0 to disable penalty (rely on boolean check).
