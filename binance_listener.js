@@ -58,7 +58,7 @@ const MAX_TIME_WINDOW_FOR_CONFIRMATION_MS = 100;
 
 // Dynamic AggTrade Confirmation Parameters
 const MIN_ABSOLUTE_CONFIRMATION_QTY_BTC = 0.01;
-const AVG_AGG_TRADE_WINDOW_SIZE = 15;
+const AVG_AGG_TRADE_WINDOW_SIZE = 12;
 const AGG_TRADE_CONFIRMATION_QTY_FACTOR = 2.0;
 
 // --- Listener State Variables ---
