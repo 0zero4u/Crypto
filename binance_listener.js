@@ -47,7 +47,7 @@ const aggTradeStreamUrl = `wss://stream.binance.com:9443/ws/${SYMBOL}@aggTrade`;
 const internalReceiverUrl = 'ws://localhost:8082';
 const RECONNECT_INTERVAL_MS = 5000;
 const BINANCE_PING_INTERVAL_MS = 3 * 60 * 1000;
-const FLAG_EXPIRY_CHECK_INTERVAL_MS = 15;
+const FLAG_EXPIRY_CHECK_INTERVAL_MS = 17;
 
 // --- Tunable Parameters ---
 const MIN_STABLE_TICKS_FOR_ALERT_BT = 1;
