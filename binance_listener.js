@@ -1,4 +1,3 @@
-// binance_listener.js (Combined BookTicker & AggTrade Logic - Simplified Payload & Further Reduced Logging - Dynamic AggTrade Confirmation - Filtered Bid Price Push - Final Payload Keys)
 
 const WebSocket = require('ws');
 
@@ -21,14 +20,14 @@ process.on('unhandledRejection', (reason, promise) => {
 
 function cleanupAndExit(exitCode = 1) {
     console.log(`[Listener] PID: ${process.pid} --- Initiating cleanup...`); // Keep: Critical shutdown info
-    const clientsToTerminate = [internalWsClient, bookTickerWsClient, aggTradeWsClient];
+    const clientsToTerminate = [internalWsClient, okxWsClient];
     clientsToTerminate.forEach(client => {
         if (client && typeof client.terminate === 'function') {
             try { client.terminate(); } catch (e) { console.error(`[Listener] Error terminating a WebSocket client: ${e.message}`); } // Keep: Error
         }
     });
 
-    const intervalsToClear = [bookTickerPingIntervalId, aggTradePingIntervalId, flagExpiryCheckIntervalId];
+    const intervalsToClear = [okxPingIntervalId];
     intervalsToClear.forEach(intervalId => {
         if (intervalId) { try { clearInterval(intervalId); } catch(e) { /* ignore */ } }
     });
@@ -41,50 +40,19 @@ function cleanupAndExit(exitCode = 1) {
 
 
 // --- Listener Configuration ---
-const SYMBOL = 'btcusdt'; // Value is lowercase
-const bookTickerStreamUrl = `wss://stream.binance.com:9443/ws/${SYMBOL}@bookTicker`;
-const aggTradeStreamUrl = `wss://stream.binance.com:9443/ws/${SYMBOL}@aggTrade`;
+const SYMBOL = 'BTC-USDT'; // OKX Instrument ID
+const okxStreamUrl = 'wss://ws.okx.com:8443/ws/v5/public';
 const internalReceiverUrl = 'ws://localhost:8082';
 const RECONNECT_INTERVAL_MS = 5000;
-const BINANCE_PING_INTERVAL_MS = 3 * 60 * 1000;
-const FLAG_EXPIRY_CHECK_INTERVAL_MS = 17;
+const OKX_PING_INTERVAL_MS = 25 * 1000;
 
 // --- Tunable Parameters ---
-const MIN_STABLE_TICKS_FOR_ALERT_BT = 1;
-const CRITICAL_LOW_ASK_QTY_THRESHOLD_BT_BTC = 0.005;
-const CRITICAL_LOW_BID_QTY_THRESHOLD_BT_BTC = 0.005;
-const MIN_DEPLETION_PERCENT_FROM_INITIAL_BT = 0.60;
-const MAX_TIME_WINDOW_FOR_CONFIRMATION_MS = 100;
-
-// Dynamic AggTrade Confirmation Parameters
-const MIN_ABSOLUTE_CONFIRMATION_QTY_BTC = 0.01;
-const AVG_AGG_TRADE_WINDOW_SIZE = 20;
-const AGG_TRADE_CONFIRMATION_QTY_FACTOR = 2.2;
-
-// Filtered Best Bid Price Push Parameter
 const BID_PRICE_FILTER_THRESHOLD = 1.0;
 
 // --- Listener State Variables ---
-let bookTickerWsClient = null;
-let aggTradeWsClient = null;
+let okxWsClient = null;
 let internalWsClient = null;
-
-let bookTickerPingIntervalId = null;
-let aggTradePingIntervalId = null;
-let flagExpiryCheckIntervalId = null;
-
-let prev_b_bt = null, prev_B_bt = null, prev_a_bt = null, prev_A_bt = null;
-let ask_price_stable_count_bt = 0;
-let initial_A_at_stable_price_bt = null;
-let bid_price_stable_count_bt = 0;
-let initial_B_at_stable_price_bt = null;
-
-let potential_lift_level_bt = null;
-let potential_lift_flag_time = null;
-let potential_sweep_level_bt = null;
-let potential_sweep_flag_time = null;
-
-let recentAggTradeQuantities = [];
+let okxPingIntervalId = null;
 let last_sent_filtered_best_bid_price = null;
 
 // --- Internal Receiver Connection ---
@@ -93,9 +61,9 @@ function connectToInternalReceiver() {
         return;
     }
     internalWsClient = new WebSocket(internalReceiverUrl);
-    internalWsClient.on('open', () => {});
+    // internalWsClient.on('open', () => {}); // REMOVED: Verbose
     internalWsClient.on('error', (err) => {
-        console.error(`[Listener] PID: ${process.pid} --- Internal receiver WebSocket error:`, err.message); // Keep: Error
+        console.error(`[Listener] PID: ${process.pid} --- Internal receiver WebSocket error: ${err.message}`); // Keep: Error
     });
     internalWsClient.on('close', (code, reason) => {
         internalWsClient = null;
@@ -104,177 +72,58 @@ function connectToInternalReceiver() {
 }
 
 // --- Data Extraction Functions ---
-function extractBookTickerData(messageString) {
+function extractOkxTickerData(messageString) {
     try {
-        const data = JSON.parse(messageString);
-        if (!data || typeof data.b !== 'string' || typeof data.B !== 'string' || typeof data.a !== 'string' || typeof data.A !== 'string') {
-            // console.warn(`[Listener] Invalid bookTicker data structure: ${messageString.substring(0, 100)}...`); // REMOVED
-            return null;
-        }
-        return {
-            price_bid: parseFloat(data.b),
-            qty_bid: parseFloat(data.B),
-            price_ask: parseFloat(data.a),
-            qty_ask: parseFloat(data.A),
-            update_id: data.u,
-            event_time: data.E || Date.now()
-        };
-    } catch (error) {
-        console.error(`[Listener] Error parsing bookTicker JSON: ${error.message}. Data: ${messageString.substring(0,100)}...`); // Keep: Error
-        return null;
-    }
-}
+        const message = JSON.parse(messageString);
 
-function extractAggTradeData(messageString) {
-    try {
-        const data = JSON.parse(messageString);
-        if (!data || typeof data.p !== 'string' || typeof data.q !== 'string' || typeof data.m !== 'boolean') {
-            // console.warn(`[Listener] Invalid aggTrade data structure: ${messageString.substring(0, 100)}...`); // REMOVED
-            return null;
+        if (typeof messageString === 'string' && messageString.toLowerCase() === 'pong') {
+            return { type: 'pong' }; // No log for pong
         }
-        return {
-            price: parseFloat(data.p),
-            quantity: parseFloat(data.q),
-            isBuyerMaker: data.m,
-            trade_time: data.T,
-            event_time: data.E
-        };
+
+        if (message.event) {
+            if (message.event === 'subscribe') {
+                console.log(`[Listener] PID: ${process.pid} --- OKX subscribed to: ${JSON.stringify(message.arg)}`); // Keep: Info
+            } else if (message.event === 'error') {
+                console.error(`[Listener] PID: ${process.pid} --- OKX API error: ${message.msg} (Code: ${message.code}) Channel: ${message.arg ? JSON.stringify(message.arg) : 'N/A'}`); // Keep: Error
+            }
+            return { type: 'event', eventData: message };
+        }
+
+        if (message.arg && message.arg.channel === 'tickers' && message.data && message.data.length > 0) {
+            const ticker = message.data[0];
+            if (ticker && typeof ticker.bidPx === 'string' && ticker.instId === SYMBOL) {
+                return {
+                    type: 'ticker',
+                    price_bid: parseFloat(ticker.bidPx),
+                    symbol: ticker.instId,
+                    event_time: parseInt(ticker.ts, 10) || Date.now()
+                };
+            }
+        }
+        return null; // No log for unhandled/invalid structure here, rely on outer try-catch if parsing fails
     } catch (error) {
-        console.error(`[Listener] Error parsing aggTrade JSON: ${error.message}. Data: ${messageString.substring(0,100)}...`); // Keep: Error
+        console.error(`[Listener] Error parsing OKX JSON: ${error.message}. Data segment: ${messageString.substring(0,70)}...`); // Keep: Error
         return null;
     }
 }
 
 // --- Signal Processing ---
-function processBookTickerUpdate(curr_bt) {
-    if (!curr_bt) return;
-    const currentTime = curr_bt.event_time;
+function processOkxTickerUpdate(parsedData) {
+    if (!parsedData || parsedData.type !== 'ticker') return;
 
-    // --- Filtered Best Bid Price Push ---
-    if (curr_bt.price_bid > 0) {
+    const curr_okx_ticker = parsedData;
+
+    if (curr_okx_ticker.price_bid > 0) {
         if (last_sent_filtered_best_bid_price === null ||
-            Math.abs(curr_bt.price_bid - last_sent_filtered_best_bid_price) >= BID_PRICE_FILTER_THRESHOLD) {
+            Math.abs(curr_okx_ticker.price_bid - last_sent_filtered_best_bid_price) >= BID_PRICE_FILTER_THRESHOLD) {
             
             const bidPricePayload = {
-                k: "P", // Kind: Price (Uppercase 'P')
-                p: curr_bt.price_bid, // Price key for "P" type is 'p'
-                SS: SYMBOL // Symbol key: Uppercase 'SS'
+                k: "P",
+                p: curr_okx_ticker.price_bid,
+                SS: curr_okx_ticker.symbol
             };
             sendToInternalClient(bidPricePayload);
-            last_sent_filtered_best_bid_price = curr_bt.price_bid;
-        }
-    }
-
-    // --- Ask Side Logic (Potential Lift) ---
-    if (prev_a_bt !== null) {
-        if (curr_bt.price_ask === prev_a_bt) {
-            ask_price_stable_count_bt++;
-        } else {
-            ask_price_stable_count_bt = 1;
-            initial_A_at_stable_price_bt = curr_bt.qty_ask;
-        }
-
-        if (ask_price_stable_count_bt >= MIN_STABLE_TICKS_FOR_ALERT_BT && curr_bt.qty_ask < prev_A_bt) {
-            const depletion_ratio_bt = (initial_A_at_stable_price_bt - curr_bt.qty_ask) / initial_A_at_stable_price_bt;
-
-            if (depletion_ratio_bt >= MIN_DEPLETION_PERCENT_FROM_INITIAL_BT || curr_bt.qty_ask <= CRITICAL_LOW_ASK_QTY_THRESHOLD_BT_BTC) {
-                potential_lift_level_bt = curr_bt.price_ask;
-                potential_lift_flag_time = currentTime;
-            }
-        }
-    } else {
-        ask_price_stable_count_bt = 1;
-        initial_A_at_stable_price_bt = curr_bt.qty_ask;
-    }
-    prev_a_bt = curr_bt.price_ask;
-    prev_A_bt = curr_bt.qty_ask;
-
-    // --- Bid Side Logic (Potential Sweep) ---
-    if (prev_b_bt !== null) {
-        if (curr_bt.price_bid === prev_b_bt) {
-            bid_price_stable_count_bt++;
-        } else {
-            bid_price_stable_count_bt = 1;
-            initial_B_at_stable_price_bt = curr_bt.qty_bid;
-        }
-
-        if (bid_price_stable_count_bt >= MIN_STABLE_TICKS_FOR_ALERT_BT && curr_bt.qty_bid < prev_B_bt) {
-            const depletion_ratio_bt = (initial_B_at_stable_price_bt - curr_bt.qty_bid) / initial_B_at_stable_price_bt;
-
-            if (depletion_ratio_bt >= MIN_DEPLETION_PERCENT_FROM_INITIAL_BT || curr_bt.qty_bid <= CRITICAL_LOW_BID_QTY_THRESHOLD_BT_BTC) {
-                potential_sweep_level_bt = curr_bt.price_bid;
-                potential_sweep_flag_time = currentTime;
-            }
-        }
-    } else {
-        bid_price_stable_count_bt = 1;
-        initial_B_at_stable_price_bt = curr_bt.qty_bid;
-    }
-    prev_b_bt = curr_bt.price_bid;
-    prev_B_bt = curr_bt.qty_bid;
-}
-
-function processAggTradeUpdate(curr_at) {
-    if (!curr_at) return;
-    const currentTime = curr_at.event_time;
-
-    let avg_qty_before_current_trade = 0;
-    if (recentAggTradeQuantities.length > 0) {
-        const sum = recentAggTradeQuantities.reduce((acc, val) => acc + val, 0);
-        avg_qty_before_current_trade = sum / recentAggTradeQuantities.length;
-    }
-
-    recentAggTradeQuantities.push(curr_at.quantity);
-    if (recentAggTradeQuantities.length > AVG_AGG_TRADE_WINDOW_SIZE) {
-        recentAggTradeQuantities.shift();
-    }
-
-    const dynamicConfirmationQtyThreshold = Math.max(
-        MIN_ABSOLUTE_CONFIRMATION_QTY_BTC,
-        avg_qty_before_current_trade * AGG_TRADE_CONFIRMATION_QTY_FACTOR
-    );
-
-    if (potential_lift_level_bt !== null &&
-        potential_lift_flag_time !== null &&
-        (currentTime - potential_lift_flag_time) <= MAX_TIME_WINDOW_FOR_CONFIRMATION_MS) {
-
-        if (curr_at.price === potential_lift_level_bt &&
-            !curr_at.isBuyerMaker &&
-            curr_at.quantity >= dynamicConfirmationQtyThreshold) {
-
-            const signal = {
-                k: "L", // Kind: Lift (Uppercase 'L')
-                l: potential_lift_level_bt, // Price key for Lift: 'l'
-                q: curr_at.quantity,
-                a: parseFloat(avg_qty_before_current_trade.toFixed(8)),
-                h: parseFloat(dynamicConfirmationQtyThreshold.toFixed(8)),
-                SS: SYMBOL // Symbol key: Uppercase 'SS'
-            };
-            sendToInternalClient(signal);
-            potential_lift_level_bt = null;
-            potential_lift_flag_time = null;
-        }
-    }
-
-    if (potential_sweep_level_bt !== null &&
-        potential_sweep_flag_time !== null &&
-        (currentTime - potential_sweep_flag_time) <= MAX_TIME_WINDOW_FOR_CONFIRMATION_MS) {
-
-        if (curr_at.price === potential_sweep_level_bt &&
-            curr_at.isBuyerMaker &&
-            curr_at.quantity >= dynamicConfirmationQtyThreshold) {
-
-            const signal = {
-                k: "S", // Kind: Sweep (Uppercase 'S')
-                s: potential_sweep_level_bt, // Price key for Sweep: 's'
-                q: curr_at.quantity,
-                a: parseFloat(avg_qty_before_current_trade.toFixed(8)),
-                h: parseFloat(dynamicConfirmationQtyThreshold.toFixed(8)),
-                SS: SYMBOL // Symbol key: Uppercase 'SS'
-            };
-            sendToInternalClient(signal);
-            potential_sweep_level_bt = null;
-            potential_sweep_flag_time = null;
+            last_sent_filtered_best_bid_price = curr_okx_ticker.price_bid;
         }
     }
 }
@@ -284,124 +133,70 @@ function sendToInternalClient(payload) {
         try {
             internalWsClient.send(JSON.stringify(payload));
         } catch (sendError) {
-            console.error(`[Listener] PID: ${process.pid} --- Error sending data to internal receiver:`, sendError.message); // Keep: Error
+            console.error(`[Listener] PID: ${process.pid} --- Error sending data to internal receiver: ${sendError.message}`); // Keep: Error
         }
-    } else {
-        // console.warn(`[Listener] PID: ${process.pid} --- Internal client not open, cannot send signal: ${JSON.stringify(payload)}`); // REMOVED
     }
+    // else { /* No log if internal client not open, it will try to reconnect */ }
 }
 
-function checkAndExpireFlags() {
-    const currentTime = Date.now();
-    if (potential_lift_level_bt !== null && potential_lift_flag_time !== null && (currentTime - potential_lift_flag_time) > MAX_TIME_WINDOW_FOR_CONFIRMATION_MS) {
-        potential_lift_level_bt = null;
-        potential_lift_flag_time = null;
-    }
-    if (potential_sweep_level_bt !== null && potential_sweep_flag_time !== null && (currentTime - potential_sweep_flag_time) > MAX_TIME_WINDOW_FOR_CONFIRMATION_MS) {
-        potential_sweep_level_bt = null;
-        potential_sweep_flag_time = null;
-    }
-}
-
-// --- Binance Stream Connection (BookTicker) ---
-function connectToBookTickerStream() {
-    if (bookTickerWsClient && (bookTickerWsClient.readyState === WebSocket.OPEN || bookTickerWsClient.readyState === WebSocket.CONNECTING)) {
+// --- OKX Stream Connection ---
+function connectToOkxStream() {
+    if (okxWsClient && (okxWsClient.readyState === WebSocket.OPEN || okxWsClient.readyState === WebSocket.CONNECTING)) {
         return;
     }
-    bookTickerWsClient = new WebSocket(bookTickerStreamUrl);
+    okxWsClient = new WebSocket(okxStreamUrl);
 
-    bookTickerWsClient.on('open', function open() {
-        prev_b_bt = null; prev_B_bt = null; prev_a_bt = null; prev_A_bt = null;
-        ask_price_stable_count_bt = 0; initial_A_at_stable_price_bt = null;
-        bid_price_stable_count_bt = 0; initial_B_at_stable_price_bt = null;
+    okxWsClient.on('open', function open() {
         last_sent_filtered_best_bid_price = null;
 
-        if (bookTickerPingIntervalId) clearInterval(bookTickerPingIntervalId);
-        bookTickerPingIntervalId = setInterval(() => {
-            if (bookTickerWsClient && bookTickerWsClient.readyState === WebSocket.OPEN) {
+        const subscriptionMsg = {
+            op: "subscribe",
+            args: [ { channel: "tickers", instId: SYMBOL } ]
+        };
+        try {
+            okxWsClient.send(JSON.stringify(subscriptionMsg));
+        } catch (e) {
+            console.error(`[Listener] PID: ${process.pid} --- Error sending OKX subscription: ${e.message}`); // Keep: Error
+        }
+
+        if (okxPingIntervalId) clearInterval(okxPingIntervalId);
+        okxPingIntervalId = setInterval(() => {
+            if (okxWsClient && okxWsClient.readyState === WebSocket.OPEN) {
                 try {
-                    bookTickerWsClient.ping(() => {});
+                    okxWsClient.send('ping');
                 } catch (pingError) {
-                    console.error(`[Listener] PID: ${process.pid} --- Error sending ping to BookTicker:`, pingError.message); // Keep: Error
+                    // console.error(`[Listener] PID: ${process.pid} --- Error sending ping to OKX: ${pingError.message}`); // Potentially too verbose if transient
                 }
             }
-        }, BINANCE_PING_INTERVAL_MS);
+        }, OKX_PING_INTERVAL_MS);
     });
 
-    bookTickerWsClient.on('message', function incoming(data) {
+    okxWsClient.on('message', function incoming(data) {
         try {
             const messageString = data.toString();
-            const parsedData = extractBookTickerData(messageString);
-            if (parsedData) {
-                processBookTickerUpdate(parsedData);
+            const parsedData = extractOkxTickerData(messageString);
+            if (parsedData && parsedData.type === 'ticker') {
+                processOkxTickerUpdate(parsedData);
             }
         } catch (e) {
-            console.error(`[Listener] PID: ${process.pid} --- CRITICAL ERROR in BookTicker message handler:`, e.message, e.stack); // Keep: Critical Error
+            console.error(`[Listener] PID: ${process.pid} --- CRITICAL ERROR in OKX message handler: ${e.message}`, e.stack); // Keep: Critical Error
         }
     });
 
-    bookTickerWsClient.on('pong', () => {});
-    bookTickerWsClient.on('error', function error(err) {
-        console.error(`[Listener] PID: ${process.pid} --- Binance BookTicker WebSocket error:`, err.message); // Keep: Error
+    okxWsClient.on('error', function error(err) {
+        console.error(`[Listener] PID: ${process.pid} --- OKX WebSocket error: ${err.message}`); // Keep: Error
     });
-    bookTickerWsClient.on('close', function close(code, reason) {
-        if (bookTickerPingIntervalId) { clearInterval(bookTickerPingIntervalId); bookTickerPingIntervalId = null; }
-        bookTickerWsClient = null;
-        setTimeout(connectToBookTickerStream, RECONNECT_INTERVAL_MS);
+
+    okxWsClient.on('close', function close(code, reason) {
+        if (okxPingIntervalId) { clearInterval(okxPingIntervalId); okxPingIntervalId = null; }
+        okxWsClient = null;
+        setTimeout(connectToOkxStream, RECONNECT_INTERVAL_MS);
     });
 }
-
-// --- Binance Stream Connection (AggTrade) ---
-function connectToAggTradeStream() {
-    if (aggTradeWsClient && (aggTradeWsClient.readyState === WebSocket.OPEN || aggTradeWsClient.readyState === WebSocket.CONNECTING)) {
-        return;
-    }
-    aggTradeWsClient = new WebSocket(aggTradeStreamUrl);
-
-    aggTradeWsClient.on('open', function open() {
-        if (aggTradePingIntervalId) clearInterval(aggTradePingIntervalId);
-        aggTradePingIntervalId = setInterval(() => {
-            if (aggTradeWsClient && aggTradeWsClient.readyState === WebSocket.OPEN) {
-                try {
-                    aggTradeWsClient.ping(() => {});
-                } catch (pingError) {
-                    console.error(`[Listener] PID: ${process.pid} --- Error sending ping to AggTrade:`, pingError.message); // Keep: Error
-                }
-            }
-        }, BINANCE_PING_INTERVAL_MS);
-    });
-
-    aggTradeWsClient.on('message', function incoming(data) {
-        try {
-            const messageString = data.toString();
-            const parsedData = extractAggTradeData(messageString);
-            if (parsedData) {
-                processAggTradeUpdate(parsedData);
-            }
-        } catch (e) {
-            console.error(`[Listener] PID: ${process.pid} --- CRITICAL ERROR in AggTrade message handler:`, e.message, e.stack); // Keep: Critical Error
-        }
-    });
-
-    aggTradeWsClient.on('pong', () => {});
-    aggTradeWsClient.on('error', function error(err) {
-        console.error(`[Listener] PID: ${process.pid} --- Binance AggTrade WebSocket error:`, err.message); // Keep: Error
-    });
-    aggTradeWsClient.on('close', function close(code, reason) {
-        if (aggTradePingIntervalId) { clearInterval(aggTradePingIntervalId); aggTradePingIntervalId = null; }
-        aggTradeWsClient = null;
-        setTimeout(connectToAggTradeStream, RECONNECT_INTERVAL_MS);
-    });
-}
-
 
 // --- Start the connections ---
 connectToInternalReceiver();
-connectToBookTickerStream();
-connectToAggTradeStream();
-
-if (flagExpiryCheckIntervalId) clearInterval(flagExpiryCheckIntervalId);
-flagExpiryCheckIntervalId = setInterval(checkAndExpireFlags, FLAG_EXPIRY_CHECK_INTERVAL_MS);
+connectToOkxStream();
 
 // Essential startup log
-console.log(`[Listener] PID: ${process.pid} --- Binance Listener (Dynamic AggTrade, Filtered Bid) started for ${SYMBOL}.`); // Keep: Critical Startup Info
+console.log(`[Listener] PID: ${process.pid} --- OKX Ticker Listener started for ${SYMBOL}. Filter: ${BID_PRICE_FILTER_THRESHOLD}.`); // Keep: Critical Startup Info
