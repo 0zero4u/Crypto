@@ -57,9 +57,9 @@ const MIN_DEPLETION_PERCENT_FROM_INITIAL_BT = 0.60;
 const MAX_TIME_WINDOW_FOR_CONFIRMATION_MS = 100;
 
 // Dynamic AggTrade Confirmation Parameters
-const MIN_ABSOLUTE_CONFIRMATION_QTY_BTC = 0.015;
+const MIN_ABSOLUTE_CONFIRMATION_QTY_BTC = 0.012;
 const AVG_AGG_TRADE_WINDOW_SIZE = 14;
-const AGG_TRADE_CONFIRMATION_QTY_FACTOR = 2.2;
+const AGG_TRADE_CONFIRMATION_QTY_FACTOR = 2.4;
 
 // --- Listener State Variables ---
 let bookTickerWsClient = null;
