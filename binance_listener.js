@@ -47,7 +47,7 @@ const aggTradeStreamUrl = `wss://stream.binance.com:9443/ws/${SYMBOL}@aggTrade`;
 const internalReceiverUrl = 'ws://localhost:8082';
 const RECONNECT_INTERVAL_MS = 5000;
 const BINANCE_PING_INTERVAL_MS = 3 * 60 * 1000;
-const FLAG_EXPIRY_CHECK_INTERVAL_MS = 14;
+const FLAG_EXPIRY_CHECK_INTERVAL_MS = 15;
 
 // --- Tunable Parameters ---
 const MIN_STABLE_TICKS_FOR_ALERT_BT = 1;
@@ -58,7 +58,7 @@ const MAX_TIME_WINDOW_FOR_CONFIRMATION_MS = 100;
 
 // Dynamic AggTrade Confirmation Parameters
 const MIN_ABSOLUTE_CONFIRMATION_QTY_BTC = 0.01;
-const AVG_AGG_TRADE_WINDOW_SIZE = 40;
+const AVG_AGG_TRADE_WINDOW_SIZE = 20;
 const AGG_TRADE_CONFIRMATION_QTY_FACTOR = 2.2;
 
 // --- Listener State Variables ---
