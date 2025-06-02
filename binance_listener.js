@@ -21,14 +21,14 @@ process.on('unhandledRejection', (reason, promise) => {
 
 function cleanupAndExit(exitCode = 1) {
     console.log(`[Listener] PID: ${process.pid} --- Initiating cleanup...`); // Keep: Critical shutdown info
-    const clientsToTerminate = [internalWsClient, bybitWsClient]; // MODIFIED
+    const clientsToTerminate = [internalWsClient, bybitWsClient];
     clientsToTerminate.forEach(client => {
         if (client && typeof client.terminate === 'function') {
             try { client.terminate(); } catch (e) { console.error(`[Listener] Error terminating a WebSocket client: ${e.message}`); } // Keep: Error
         }
     });
 
-    const intervalsToClear = [bybitPingIntervalId]; // MODIFIED
+    const intervalsToClear = [bybitPingIntervalId];
     intervalsToClear.forEach(intervalId => {
         if (intervalId) { try { clearInterval(intervalId); } catch(e) { /* ignore */ } }
     });
@@ -41,19 +41,16 @@ function cleanupAndExit(exitCode = 1) {
 
 // --- Listener Configuration ---
 const SYMBOL = 'BTCUSDT'; // Bybit Instrument ID (e.g., BTCUSDT, ETHUSDT)
-const BYBIT_STREAM_URL = 'wss://stream.bybit.com/v5/public/spot'; // For Spot. Use /v5/public/linear for USDT perpetuals
+const BYBIT_STREAM_URL = 'wss://stream.bybit.com/v5/public/linear'; // For USDT perpetuals (tickers stream)
 const internalReceiverUrl = 'ws://localhost:8082';
 const RECONNECT_INTERVAL_MS = 5000;
 const BYBIT_PING_INTERVAL_MS = 18 * 1000; // Bybit recommends pinging every 20s if no other messages. Be proactive.
 
-// --- Tunable Parameters ---
-const BID_PRICE_FILTER_THRESHOLD = 1.0;
-
 // --- Listener State Variables ---
-let bybitWsClient = null; // MODIFIED
+let bybitWsClient = null;
 let internalWsClient = null;
-let bybitPingIntervalId = null; // MODIFIED
-let last_sent_filtered_best_bid_price = null;
+let bybitPingIntervalId = null;
+let last_sent_mark_price = null; // MODIFIED: To store the last sent mark price
 
 // --- Internal Receiver Connection ---
 function connectToInternalReceiver() {
@@ -71,7 +68,7 @@ function connectToInternalReceiver() {
 }
 
 // --- Data Extraction Functions ---
-function extractBybitOrderbookData(messageString) { // MODIFIED function name
+function extractBybitTickerData(messageString) { // MODIFIED function name
     try {
         const message = JSON.parse(messageString);
 
@@ -95,18 +92,16 @@ function extractBybitOrderbookData(messageString) { // MODIFIED function name
             }
         }
 
-        // Handle orderbook data
-        // Example: {"topic":"orderbook.1.BTCUSDT","type":"snapshot","ts":1672304484468,"data":{"s":"BTCUSDT","b":[["20000.00","1.5"]],"a":[["20001.00","2.0"]],"u":12345,"seq":1}}
-        if (message.topic && message.topic === `orderbook.1.${SYMBOL}` && message.data) {
-            const orderbook = message.data;
-            if (orderbook.s === SYMBOL && orderbook.b && orderbook.b.length > 0 && orderbook.b[0].length > 0) {
-                return {
-                    type: 'orderbook_update', // MODIFIED type
-                    price_bid: parseFloat(orderbook.b[0][0]), // Best bid price
-                    symbol: orderbook.s,
-                    event_time: parseInt(message.ts, 10) || Date.now()
-                };
-            }
+        // Handle ticker data
+        // Example: {"topic":"tickers.BTCUSDT","type":"snapshot","ts":1690413396005,"data":{"symbol":"BTCUSDT", "markPrice":"25803.50", ...}}
+        if (message.topic && message.topic === `tickers.${SYMBOL}` && message.data && message.data.markPrice !== undefined) {
+            const tickerData = message.data;
+            return {
+                type: 'ticker_update', // MODIFIED type
+                price_mark: parseFloat(tickerData.markPrice), // Mark price
+                symbol: tickerData.symbol,
+                event_time: parseInt(message.ts, 10) || Date.now()
+            };
         }
         // console.log(`[Listener] PID: ${process.pid} --- Bybit unhandled message structure: ${messageString.substring(0,100)}`); // Optional: for debugging unhandled valid JSON
         return null;
@@ -117,22 +112,22 @@ function extractBybitOrderbookData(messageString) { // MODIFIED function name
 }
 
 // --- Signal Processing ---
-function processBybitOrderbookUpdate(parsedData) { // MODIFIED function name
-    if (!parsedData || parsedData.type !== 'orderbook_update') return; // MODIFIED type check
+function processBybitTickerUpdate(parsedData) { // MODIFIED function name
+    if (!parsedData || parsedData.type !== 'ticker_update') return; // MODIFIED type check
 
-    const current_bybit_data = parsedData;
+    const current_ticker_data = parsedData;
 
-    if (current_bybit_data.price_bid > 0) {
-        if (last_sent_filtered_best_bid_price === null ||
-            Math.abs(current_bybit_data.price_bid - last_sent_filtered_best_bid_price) >= BID_PRICE_FILTER_THRESHOLD) {
+    if (current_ticker_data.price_mark > 0) { // Ensure mark price is valid
+        // Send if it's the first price or if the mark price has changed
+        if (last_sent_mark_price === null || current_ticker_data.price_mark !== last_sent_mark_price) {
             
-            const bidPricePayload = {
+            const pricePayload = {
                 k: "P", // Key for "Price type" (e.g. Price)
-                p: current_bybit_data.price_bid, // Key for "Price"
-                SS: current_bybit_data.symbol    // Key for "Symbol Source" (Symbol from Source)
+                p: current_ticker_data.price_mark, // Key for "Price" (using mark price)
+                SS: current_ticker_data.symbol    // Key for "Symbol Source" (Symbol from Source)
             };
-            sendToInternalClient(bidPricePayload);
-            last_sent_filtered_best_bid_price = current_bybit_data.price_bid;
+            sendToInternalClient(pricePayload);
+            last_sent_mark_price = current_ticker_data.price_mark;
         }
     }
 }
@@ -147,19 +142,19 @@ function sendToInternalClient(payload) {
     }
 }
 
-// --- Bybit Stream Connection --- // MODIFIED section name
-function connectToBybitStream() { // MODIFIED function name
+// --- Bybit Stream Connection ---
+function connectToBybitStream() {
     if (bybitWsClient && (bybitWsClient.readyState === WebSocket.OPEN || bybitWsClient.readyState === WebSocket.CONNECTING)) {
         return;
     }
-    bybitWsClient = new WebSocket(BYBIT_STREAM_URL); // MODIFIED
+    bybitWsClient = new WebSocket(BYBIT_STREAM_URL);
 
     bybitWsClient.on('open', function open() {
-        last_sent_filtered_best_bid_price = null;
+        last_sent_mark_price = null; // Reset last sent price on new connection
 
         const subscriptionMsg = {
             op: "subscribe",
-            args: [`orderbook.1.${SYMBOL}`] // MODIFIED subscription message
+            args: [`tickers.${SYMBOL}`] // MODIFIED subscription message for tickers
         };
         try {
             bybitWsClient.send(JSON.stringify(subscriptionMsg));
@@ -167,46 +162,46 @@ function connectToBybitStream() { // MODIFIED function name
             console.error(`[Listener] PID: ${process.pid} --- Error sending Bybit subscription: ${e.message}`); // Keep: Error
         }
 
-        if (bybitPingIntervalId) clearInterval(bybitPingIntervalId); // MODIFIED
-        bybitPingIntervalId = setInterval(() => { // MODIFIED
+        if (bybitPingIntervalId) clearInterval(bybitPingIntervalId);
+        bybitPingIntervalId = setInterval(() => {
             if (bybitWsClient && bybitWsClient.readyState === WebSocket.OPEN) {
                 try {
-                    bybitWsClient.send(JSON.stringify({ op: "ping" })); // MODIFIED Bybit ping
+                    bybitWsClient.send(JSON.stringify({ op: "ping" })); // Bybit ping
                 } catch (pingError) {
                     // console.error(`[Listener] PID: ${process.pid} --- Error sending ping to Bybit: ${pingError.message}`); // Potentially too verbose
                 }
             }
-        }, BYBIT_PING_INTERVAL_MS); // MODIFIED
+        }, BYBIT_PING_INTERVAL_MS);
     });
 
     bybitWsClient.on('message', function incoming(data) {
         try {
             const messageString = data.toString();
-            const parsedData = extractBybitOrderbookData(messageString); // MODIFIED
-            if (parsedData && parsedData.type === 'orderbook_update') { // MODIFIED type check
-                processBybitOrderbookUpdate(parsedData); // MODIFIED
+            const parsedData = extractBybitTickerData(messageString); // MODIFIED to use new extraction function
+            if (parsedData && parsedData.type === 'ticker_update') { // MODIFIED type check
+                processBybitTickerUpdate(parsedData); // MODIFIED to use new processing function
             }
         } catch (e) {
-            console.error(`[Listener] PID: ${process.pid} --- CRITICAL ERROR in Bybit message handler: ${e.message}`, e.stack); // Keep: Critical Error // MODIFIED
+            console.error(`[Listener] PID: ${process.pid} --- CRITICAL ERROR in Bybit message handler: ${e.message}`, e.stack); // Keep: Critical Error
         }
     });
 
     bybitWsClient.on('error', function error(err) {
-        console.error(`[Listener] PID: ${process.pid} --- Bybit WebSocket error: ${err.message}`); // Keep: Error // MODIFIED
+        console.error(`[Listener] PID: ${process.pid} --- Bybit WebSocket error: ${err.message}`); // Keep: Error
     });
 
     bybitWsClient.on('close', function close(code, reason) {
-        if (bybitPingIntervalId) { clearInterval(bybitPingIntervalId); bybitPingIntervalId = null; } // MODIFIED
-        bybitWsClient = null; // MODIFIED
+        if (bybitPingIntervalId) { clearInterval(bybitPingIntervalId); bybitPingIntervalId = null; }
+        bybitWsClient = null;
         // console.log(`[Listener] PID: ${process.pid} --- Bybit WebSocket closed. Code: ${code}, Reason: ${reason ? reason.toString() : 'N/A'}. Reconnecting...`); // Optional: more detail on close
-        setTimeout(connectToBybitStream, RECONNECT_INTERVAL_MS); // MODIFIED
+        setTimeout(connectToBybitStream, RECONNECT_INTERVAL_MS);
     });
 }
 
 // --- Start the connections ---
 connectToInternalReceiver();
-connectToBybitStream(); // MODIFIED
+connectToBybitStream();
 
 // Essential startup log
-console.log(`[Listener] PID: ${process.pid} --- Bybit Orderbook Listener started for ${SYMBOL} (Depth 1). Filter: ${BID_PRICE_FILTER_THRESHOLD}.`); // Keep: Critical Startup Info // MODIFIED
+console.log(`[Listener] PID: ${process.pid} --- Bybit Ticker Listener started for ${SYMBOL} (Mark Price).`); // Keep: Critical Startup Info // MODIFIED
 // --- END OF MODIFIED FILE bybit_listener.js ---
