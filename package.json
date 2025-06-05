@@ -28,7 +28,7 @@
   "author": "0zero4u",
   "license": "ISC",
   "dependencies": {
-    "ws": "^8.17.0"
+    "ws": "^8.17.0",
     "pako": "^2.1.0"
   }
 }
