@@ -19,6 +19,8 @@
     "crypto",
     "binance",
     
+    "bbo",
+    "huobi",
     "pako",
     "gzip",
     
