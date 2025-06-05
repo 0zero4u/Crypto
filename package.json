@@ -18,6 +18,10 @@
   "keywords": [
     "crypto",
     "binance",
+    
+    "pako",
+    "gzip",
+    
     "websocket",
     "nodejs",
     "depth",
