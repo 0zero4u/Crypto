@@ -29,5 +29,6 @@
   "license": "ISC",
   "dependencies": {
     "ws": "^8.17.0"
+    "pako": "^2.1.0"
   }
 }
