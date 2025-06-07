@@ -45,7 +45,7 @@ const BINANCE_FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL.toLowe
 const internalReceiverUrl = 'ws://localhost:8082';
 const RECONNECT_INTERVAL_MS = 5000;
 const PRICE_CHANGE_THRESHOLD = 1.0;
-const PROCESSING_INTERVAL_MS = 20;
+const PROCESSING_INTERVAL_MS = 14;
 
 // --- Listener State Variables ---
 let binanceWsClient = null;
