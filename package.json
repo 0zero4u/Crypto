@@ -18,6 +18,9 @@
   "keywords": [
     "crypto",
     "binance",
+
+    "coinswitch",  
+    "socket.io",
     
     "bbo",
     "huobi",
