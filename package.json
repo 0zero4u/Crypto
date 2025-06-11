@@ -39,7 +39,6 @@
   },
   "overrides": {
     "xmlhttprequest-ssl": "1.6.2",
-    "ws": "8.17.0",
     "cookie": "0.6.0",
     "debug": "4.3.4"
   }
