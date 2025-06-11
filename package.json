@@ -38,9 +38,9 @@
     "socket.io": "2.4.0"
   },
   "overrides": {
-    "debug": "4.3.4",
-    "engine.io": "3.5.0",
-    "xmlhttprequest-ssl": "1.6.1",
-    "mime": "2.5.2"
+    "xmlhttprequest-ssl": "1.6.2",
+    "ws": "8.17.0",
+    "cookie": "0.6.0",
+    "debug": "4.3.4"
   }
 }
