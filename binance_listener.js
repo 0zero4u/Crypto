@@ -38,7 +38,7 @@ const SYMBOL = 'BTCUSD';
 const DELTA_STREAM_URL = 'wss://socket.india.delta.exchange';
 const internalReceiverUrl = 'ws://localhost:8082';
 const RECONNECT_INTERVAL_MS = 5000;
-const PRICE_CHANGE_THRESHOLD = 1.0;
+const PRICE_CHANGE_THRESHOLD = 0.5;
 const PING_INTERVAL_MS = 30000;
 const PONG_TIMEOUT_MS = 5000;
 
