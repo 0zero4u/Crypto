@@ -42,7 +42,7 @@ const COINDCX_TRADE_CHANNEL = 'B-BTC_USDT@trades';
 const internalReceiverUrl = 'ws://localhost:8082';
 const RECONNECT_INTERVAL_MS = 5000;
 const PING_INTERVAL_MS = 25000;
-const PRICE_CHANGE_THRESHOLD = 1.0; // <-- ADDED: Only send price if change is >= this value.
+const PRICE_CHANGE_THRESHOLD = 0.5; // <-- ADDED: Only send price if change is >= this value.
 
 // --- Listener State Variables ---
 let coindcxSocket = null;
