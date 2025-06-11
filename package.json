@@ -18,23 +18,23 @@
   "keywords": [
     "crypto",
     "binance",
-    
     "bbo",
     "huobi",
     "pako",
     "gzip",
-    
     "websocket",
     "nodejs",
     "depth",
     "btcusdt",
     "msgpack",
-    "arbitrage"
+    "arbitrage",
+    "socket.io"
   ],
   "author": "0zero4u",
   "license": "ISC",
   "dependencies": {
     "ws": "^8.17.0",
-    "pako": "^2.1.0"
+    "pako": "^2.1.0",
+    "socket.io": "2.4.0"
   }
 }
