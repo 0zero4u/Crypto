@@ -36,5 +36,11 @@
     "ws": "^8.17.0",
     "pako": "^2.1.0",
     "socket.io": "2.4.0"
+  },
+  "overrides": {
+    "debug": "4.3.4",
+    "engine.io": "3.5.0",
+    "xmlhttprequest-ssl": "1.6.1",
+    "mime": "2.5.2"
   }
 }
