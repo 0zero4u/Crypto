@@ -1,57 +1,54 @@
-// --- START OF FILE bybit_listener.js ---
+// --- START OF FILE delta_listener.js ---
 
 const WebSocket = require('ws');
 
-// --- Global Error Handlers ---
+// --- Global Error Handlers (Critical Only) ---
 process.on('uncaughtException', (err, origin) => {
-    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNCAUGHT EXCEPTION`);
-    console.error(err.stack || err);
-    console.error(`[Listener] Exception origin: ${origin}`);
-    console.error(`[Listener] PID: ${process.pid} --- Exiting due to uncaught exception...`);
+    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNCAUGHT EXCEPTION | ${err.message}`);
     cleanupAndExit(1);
 });
-
 process.on('unhandledRejection', (reason, promise) => {
-    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNHANDLED PROMISE REJECTION`);
-    console.error('[Listener] Unhandled Rejection at:', promise);
-    console.error('[Listener] Reason:', reason instanceof Error ? reason.stack : reason);
-    console.error(`[Listener] PID: ${process.pid} --- Exiting due to unhandled promise rejection...`);
+    const reasonMsg = reason instanceof Error ? reason.message : String(reason);
+    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNHANDLED REJECTION | ${reasonMsg}`);
     cleanupAndExit(1);
 });
 
 function cleanupAndExit(exitCode = 1) {
-    console.log(`[Listener] PID: ${process.pid} --- Initiating cleanup...`); // Keep: Critical shutdown info
-    const clientsToTerminate = [internalWsClient, bybitWsClient];
+    console.log(`[Listener] PID: ${process.pid} --- Initiating cleanup and exit...`); // Critical shutdown log
+    const clientsToTerminate = [internalWsClient, deltaWsClient];
     clientsToTerminate.forEach(client => {
         if (client && typeof client.terminate === 'function') {
-            try { client.terminate(); } catch (e) { console.error(`[Listener] Error terminating a WebSocket client: ${e.message}`); } // Keep: Error
+            try { client.terminate(); } catch (e) { /* Silent on purpose */ }
         }
     });
 
-    const intervalsToClear = [pingIntervalId];
-    intervalsToClear.forEach(intervalId => {
-        if (intervalId) { try { clearInterval(intervalId); } catch(e) { /* ignore */ } }
+    const timers = [pingIntervalId, pongTimeoutId];
+    timers.forEach(timer => {
+        if (timer) { try { clearInterval(timer); clearTimeout(timer); } catch(e) { /* ignore */ } }
     });
 
     setTimeout(() => {
-        console.log(`[Listener] PID: ${process.pid} --- Exiting with code ${exitCode}.`); // Keep: Critical shutdown info
+        console.log(`[Listener] PID: ${process.pid} --- Exiting with code ${exitCode}.`); // Critical shutdown log
         process.exit(exitCode);
     }, 1000).unref();
 }
 
 // --- Listener Configuration ---
-const SYMBOL = 'BTCUSDT';
-const BYBIT_STREAM_URL = 'wss://stream.bybit.com/v5/public/linear';
+const SYMBOL = 'BTCUSD';
+const DELTA_STREAM_URL = 'wss://socket.india.delta.exchange';
 const internalReceiverUrl = 'ws://localhost:8082';
 const RECONNECT_INTERVAL_MS = 5000;
 const PRICE_CHANGE_THRESHOLD = 1.0;
-const BYBIT_PING_INTERVAL_MS = 20000; // Bybit requires a ping every 20 seconds
+const PING_INTERVAL_MS = 30000;
+const PONG_TIMEOUT_MS = 5000;
 
 // --- Listener State Variables ---
-let bybitWsClient = null;
+let deltaWsClient = null;
 let internalWsClient = null;
-let last_sent_bid_price = null;
+let last_sent_price = null;
 let pingIntervalId = null;
+let pongTimeoutId = null;
+let isPongReceived = true;
 
 // --- Internal Receiver Connection ---
 function connectToInternalReceiver() {
@@ -59,60 +56,35 @@ function connectToInternalReceiver() {
         return;
     }
     internalWsClient = new WebSocket(internalReceiverUrl);
-    internalWsClient.on('error', (err) => {
-        console.error(`[Listener] PID: ${process.pid} --- Internal receiver WebSocket error: ${err.message}`); // Keep: Error
-    });
+    // Errors are suppressed. The app will simply fail to send data silently.
+    internalWsClient.on('error', (err) => { /* Silent */ });
     internalWsClient.on('close', (code, reason) => {
         internalWsClient = null;
         setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
     });
 }
 
-// --- Data Extraction Functions ---
-function extractBybitOrderbookData(messageString) {
-    try {
-        const message = JSON.parse(messageString);
-        // Check for actual orderbook data (snapshot or delta)
-        if (message.topic && message.topic.startsWith('orderbook') && message.data && message.data.b && message.data.b.length > 0) {
-            return {
-                type: 'orderbook_update',
-                price_bid: parseFloat(message.data.b[0][0]), // Best bid price is the first entry
-                symbol: message.data.s,
-                event_time: message.ts
-            };
-        }
-        return null;
-    } catch (error) {
-        console.error(`[Listener] Error parsing Bybit JSON: ${error.message}. Data segment: ${messageString.substring(0,70)}...`); // Keep: Error
-        return null;
-    }
-}
-
 // --- Signal Processing ---
-function processOrderbookUpdate(parsedData) {
-    if (!parsedData || parsedData.type !== 'orderbook_update') return;
+function processTradeUpdate(tradeData) {
+    if (!tradeData || !tradeData.price) return;
 
-    const current_bid_price = parsedData.price_bid;
+    const current_price = tradeData.price;
 
-    if (current_bid_price > 0) {
+    if (current_price > 0) {
         let shouldSend = false;
-        if (last_sent_bid_price === null) {
+        if (last_sent_price === null) {
             shouldSend = true;
         } else {
-            const priceDifference = Math.abs(current_bid_price - last_sent_bid_price);
+            const priceDifference = Math.abs(current_price - last_sent_price);
             if (priceDifference >= PRICE_CHANGE_THRESHOLD) {
                 shouldSend = true;
             }
         }
         
         if (shouldSend) {
-            const pricePayload = {
-                k: "P",
-                p: current_bid_price,
-                SS: parsedData.symbol
-            };
+            const pricePayload = { k: "P", p: current_price, SS: tradeData.symbol };
             sendToInternalClient(pricePayload);
-            last_sent_bid_price = current_bid_price;
+            last_sent_price = current_price;
         }
     }
 }
@@ -122,66 +94,85 @@ function sendToInternalClient(payload) {
         try {
             internalWsClient.send(JSON.stringify(payload));
         } catch (sendError) {
-            console.error(`[Listener] PID: ${process.pid} --- Error sending data to internal receiver: ${sendError.message}`); // Keep: Error
+            // Suppress send errors to reduce log noise.
         }
     }
 }
 
-// --- Bybit Stream Connection ---
-function connectToBybitStream() {
-    if (bybitWsClient && (bybitWsClient.readyState === WebSocket.OPEN || bybitWsClient.readyState === WebSocket.CONNECTING)) {
+// --- Delta Exchange Stream Connection ---
+function connectToDeltaStream() {
+    if (deltaWsClient && (deltaWsClient.readyState === WebSocket.OPEN || deltaWsClient.readyState === WebSocket.CONNECTING)) {
         return;
     }
-    bybitWsClient = new WebSocket(BYBIT_STREAM_URL);
+    deltaWsClient = new WebSocket(DELTA_STREAM_URL);
 
-    bybitWsClient.on('open', function open() {
-        const subscription = {
-            "op": "subscribe",
-            "args": [`orderbook.1.${SYMBOL}`]
-        };
-        bybitWsClient.send(JSON.stringify(subscription));
+    deltaWsClient.on('open', function open() {
+        deltaWsClient.send(JSON.stringify({ "type": "subscribe", "payload": { "channels": [{ "name": "all_trades", "symbols": [SYMBOL] }] } }));
+        deltaWsClient.send(JSON.stringify({ "type": "enable_heartbeat" }));
 
         if (pingIntervalId) clearInterval(pingIntervalId);
-        pingIntervalId = setInterval(() => {
-            if (bybitWsClient.readyState === WebSocket.OPEN) {
-                bybitWsClient.send(JSON.stringify({ op: "ping" }));
-            }
-        }, BYBIT_PING_INTERVAL_MS);
+        if (pongTimeoutId) clearTimeout(pongTimeoutId);
+        isPongReceived = true;
 
-        last_sent_bid_price = null;
+        pingIntervalId = setInterval(() => {
+            if (deltaWsClient.readyState === WebSocket.OPEN) {
+                isPongReceived = false;
+                deltaWsClient.send(JSON.stringify({ type: "ping" }));
+                
+                pongTimeoutId = setTimeout(() => {
+                    if (!isPongReceived) {
+                        // Pong timeout is a connection error. Terminate silently to trigger reconnect.
+                        if (deltaWsClient) deltaWsClient.terminate();
+                    }
+                }, PONG_TIMEOUT_MS);
+            }
+        }, PING_INTERVAL_MS);
+
+        last_sent_price = null;
     });
 
-    bybitWsClient.on('message', function incoming(data) {
+    deltaWsClient.on('message', function incoming(data) {
         try {
-            const messageString = data.toString();
-            if (messageString.includes('"op":"pong"')) {
+            const message = JSON.parse(data.toString());
+
+            if (message.type === 'pong') {
+                isPongReceived = true;
+                if (pongTimeoutId) clearTimeout(pongTimeoutId);
                 return;
             }
-            const parsedData = extractBybitOrderbookData(messageString);
-            if (parsedData) {
-                // Process the data immediately upon arrival
-                processOrderbookUpdate(parsedData);
+            if (message.type === 'heartbeat' || message.type === 'subscription_success') {
+                return; // Ignore acknowledged control messages
+            }
+
+            if (message.type === 'all_trades_snapshot' && Array.isArray(message.trades)) {
+                if (message.trades.length > 0) {
+                     const latestTrade = message.trades[message.trades.length - 1];
+                     processTradeUpdate({ price: parseFloat(latestTrade.price), symbol: message.symbol });
+                }
+            } else if (message.type === 'all_trades' && message.price) {
+                processTradeUpdate({ price: parseFloat(message.price), symbol: message.symbol });
             }
         } catch (e) {
-            console.error(`[Listener] PID: ${process.pid} --- CRITICAL ERROR in Bybit message handler: ${e.message}`, e.stack); // Keep: Critical Error
+            // This is a critical data processing error. Keep it.
+            console.error(`[Listener] PID: ${process.pid} --- CRITICAL ERROR in message handler: ${e.message}`);
         }
     });
 
-    bybitWsClient.on('error', function error(err) {
-        console.error(`[Listener] PID: ${process.pid} --- Bybit WebSocket error: ${err.message}`); // Keep: Error
-    });
+    // Suppress general WebSocket errors. 'close' event will handle reconnection.
+    deltaWsClient.on('error', function error(err) { /* Silent */ });
 
-    bybitWsClient.on('close', function close(code, reason) {
+    deltaWsClient.on('close', function close(code, reason) {
         if (pingIntervalId) { clearInterval(pingIntervalId); pingIntervalId = null; }
-        bybitWsClient = null;
-        setTimeout(connectToBybitStream, RECONNECT_INTERVAL_MS);
+        if (pongTimeoutId) { clearTimeout(pongTimeoutId); pongTimeoutId = null; }
+        deltaWsClient = null;
+        setTimeout(connectToDeltaStream, RECONNECT_INTERVAL_MS);
     });
 }
 
 // --- Start the connections ---
 connectToInternalReceiver();
-connectToBybitStream();
+connectToDeltaStream();
 
-// Essential startup log
-console.log(`[Listener] PID: ${process.pid} --- Bybit Listener started for ${SYMBOL} (Best Bid). Filtering on >= ${PRICE_CHANGE_THRESHOLD} price change.`); // Keep: Critical Startup Info
-// --- END OF FILE bybit_listener.js ---
+// Critical startup log
+console.log(`[Listener] PID: ${process.pid} --- Started: ${SYMBOL} | Threshold: ${PRICE_CHANGE_THRESHOLD}`);
+// --- END OF FILE delta_listener.js ---
