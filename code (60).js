@@ -1,0 +1,168 @@
+// --- START OF FILE binance_listener.js ---
+
+const WebSocket = require('ws');
+
+// --- Global Error Handlers (unchanged) ---
+// ...
+
+// --- Predictor Configuration ---
+const SYMBOL = 'BTCUSDT';
+const BINANCE_STREAM_URL = `wss://fstream.binance.com/stream?streams=${SYMBOL.toLowerCase()}@depth5@0ms/${SYMBOL.toLowerCase()}@trade`;
+const internalReceiverUrl = 'ws://localhost:8082';
+const RECONNECT_INTERVAL_MS = 5000;
+
+// --- Formula Weights, Normalizers & Hysteresis Filtering ---
+const MODEL_VERSION = "2.6-hysteresis";
+const WINDOW_SIZES = [5, 20];
+const SPREAD_NORMALIZER = 0.10;
+const BASELINE_WINDOW_SECONDS = 300;
+const FREQ_MULTIPLIER = 3.0;
+const FREQ_FLOOR_TPS = 15.0;
+
+// *** NEW HYSTERESIS THRESHOLDS FOR ZERO-LATENCY FILTERING ***
+const HYSTERESIS_THRESHOLDS = {
+    // Thresholds to enter a state (moving away from NEUTRAL)
+    ON: {
+        WEAK_BUY: 1.5,
+        STRONG_BUY: 3.0,
+        WEAK_SELL: -1.5,
+        STRONG_SELL: -3.0,
+    },
+    // Thresholds to leave a state (moving back toward NEUTRAL)
+    OFF: {
+        WEAK_BUY: 1.2,    // Must drop below this to become NEUTRAL
+        STRONG_BUY: 2.7,  // Must drop below this to become WEAK_BUY
+        WEAK_SELL: -1.2,  // Must rise above this to become NEUTRAL
+        STRONG_SELL: -2.7, // Must rise above this to become WEAK_SELL
+    }
+};
+
+const WEIGHTS = {
+    wmp_mid_diff: 3.0, spread_normalized: -1.0, tvi_5: 1.0,
+    delta_tvi_5: 2.5, freq_norm_5: 0.5, tvi_20: 1.0,
+    delta_tvi_20: 1.0, freq_norm_20: 0.3
+};
+
+// --- Predictor State Variables ---
+let binanceWsClient = null;
+let internalWsClient = null;
+let lastBookFeatures = { wmp_mid_diff: 0, spread_normalized: 0, source_timestamp: 0 };
+let lastSentBidPrice = 0;
+let lastSentBias = 'NEUTRAL'; // Only need to store the last sent bias
+
+let tviState = {};
+let tradeFreqState = {};
+let secondBuckets = new Array(BASELINE_WINDOW_SECONDS).fill(0);
+let totalTrades5Min = 0;
+let currentSecondTimestamp = 0;
+let currentBucketIndex = 0;
+
+function initializeState() {
+    // ... (rest of initialization)
+    lastSentBias = 'NEUTRAL';
+    // ... (full function body from previous version)
+    WINDOW_SIZES.forEach(size => {
+        tviState[size] = { queue: [], buyVol: 0, sellVol: 0, lastTVI: 0 };
+        tradeFreqState[size] = { queue: [] };
+    });
+    secondBuckets.fill(0);
+    totalTrades5Min = 0;
+    currentSecondTimestamp = Math.floor(Date.now() / 1000);
+    currentBucketIndex = 0;
+    lastSentBidPrice = 0;
+}
+
+
+// --- NEW HYSTERESIS LOGIC FUNCTION ---
+/**
+ * Determines the new bias based on the current score and the last sent bias, applying hysteresis.
+ * @param {number} score The current predictive score.
+ * @param {string} lastBias The last bias that was sent to the client.
+ * @returns {string} The new bias state.
+ */
+function determineNewBias(score, lastBias) {
+    const { ON, OFF } = HYSTERESIS_THRESHOLDS;
+    switch (lastBias) {
+        case 'NEUTRAL':
+            if (score > ON.WEAK_BUY) return 'WEAK_BUY_BIAS';
+            if (score < ON.WEAK_SELL) return 'WEAK_SELL_BIAS';
+            return 'NEUTRAL';
+        
+        case 'WEAK_BUY_BIAS':
+            if (score > ON.STRONG_BUY) return 'STRONG_BUY_BIAS'; // Upgrade
+            if (score < OFF.WEAK_BUY) return 'NEUTRAL';           // Downgrade
+            return 'WEAK_BUY_BIAS';
+
+        case 'STRONG_BUY_BIAS':
+            if (score < OFF.STRONG_BUY) return 'WEAK_BUY_BIAS';   // Downgrade
+            return 'STRONG_BUY_BIAS';
+
+        case 'WEAK_SELL_BIAS':
+            if (score < ON.STRONG_SELL) return 'STRONG_SELL_BIAS'; // Upgrade
+            if (score > OFF.WEAK_SELL) return 'NEUTRAL';            // Downgrade
+            return 'WEAK_SELL_BIAS';
+
+        case 'STRONG_SELL_BIAS':
+            if (score > OFF.STRONG_SELL) return 'WEAK_SELL_BIAS';  // Downgrade
+            return 'STRONG_SELL_BIAS';
+            
+        default:
+            return 'NEUTRAL';
+    }
+}
+
+
+// --- MODIFIED processTrade with new hysteresis logic ---
+function processTrade(data) {
+    try {
+        // --- Feature calculation part is unchanged ---
+        const trade = { q: parseFloat(data.q), m: data.m, T: data.T };
+        updateBaseline(trade.T);
+        const baselineFreq = totalTrades5Min / BASELINE_WINDOW_SECONDS;
+        const flowFeatures = {};
+        for (const size of WINDOW_SIZES) {
+            const { tvi, delta_tvi } = updateTVI(trade, size);
+            const tradeFreq = updateTradeFreq(trade.T, size);
+            const fastMarketSpeed = Math.max(baselineFreq * FREQ_MULTIPLIER, FREQ_FLOOR_TPS);
+            const freq_norm = fastMarketSpeed > 0 ? Math.min(tradeFreq, fastMarketSpeed) / fastMarketSpeed : 0;
+            flowFeatures[size] = { tvi, delta_tvi, freq_norm };
+        }
+        const score = 
+            (WEIGHTS.wmp_mid_diff * lastBookFeatures.wmp_mid_diff) +
+            (WEIGHTS.spread_normalized * lastBookFeatures.spread_normalized) +
+            (WEIGHTS.tvi_5 * flowFeatures[5].tvi) + (WEIGHTS.delta_tvi_5 * flowFeatures[5].delta_tvi) + (WEIGHTS.freq_norm_5 * flowFeatures[5].freq_norm) +
+            (WEIGHTS.tvi_20 * flowFeatures[20].tvi) + (WEIGHTS.delta_tvi_20 * flowFeatures[20].delta_tvi) + (WEIGHTS.freq_norm_20 * flowFeatures[20].freq_norm);
+
+        // --- NEW ZERO-LATENCY FILTERING LOGIC ---
+        const newBias = determineNewBias(score, lastSentBias);
+
+        // The only condition needed: Has the bias state changed according to our hysteresis rules?
+        if (newBias !== lastSentBias) {
+            const finalPayload = createFinalPayload(data, score, newBias, flowFeatures, baselineFreq);
+            sendToInternalClient(finalPayload);
+            
+            // Update the state for the next comparison
+            lastSentBias = newBias;
+        }
+    } catch (e) {
+        console.error(`[Predictor] CRITICAL ERROR in trade processor: ${e.message}`, e.stack);
+    }
+}
+
+// --- All other functions (connect, processDepth, update*, createPayload, etc.) are unchanged ---
+// ... (Including full function bodies for completeness)
+function cleanupAndExit(exitCode = 1) { const clientsToTerminate = [internalWsClient, binanceWsClient]; clientsToTerminate.forEach(client => { if (client && typeof client.terminate === 'function') { try { client.terminate(); } catch (e) { console.error(`[Predictor] Error terminating a WebSocket client: ${e.message}`); } } }); setTimeout(() => { process.exit(exitCode); }, 1000).unref(); }
+function processDepthUpdate(data) { if (!data.b || !data.a || data.b.length === 0 || data.a.length === 0) return; try { const bestBidPrice = parseFloat(data.b[0][0]); if (bestBidPrice !== lastSentBidPrice) { sendToInternalClient({ p: bestBidPrice }); lastSentBidPrice = bestBidPrice; } const bestBidQty = parseFloat(data.b[0][1]); const bestAskPrice = parseFloat(data.a[0][0]); const bestAskQty = parseFloat(data.a[0][1]); if (bestBidQty === 0 || bestAskQty === 0) return; const midPrice = (bestBidPrice + bestAskPrice) / 2; const wmp = (bestBidPrice * bestAskQty + bestAskPrice * bestBidQty) / (bestBidQty + bestAskQty); const spread = bestAskPrice - bestBidPrice; lastBookFeatures.wmp_mid_diff = wmp - midPrice; lastBookFeatures.spread_normalized = spread / SPREAD_NORMALIZER; lastBookFeatures.source_timestamp = data.E; } catch (e) { console.error(`[Predictor] Error processing depth update: ${e.message}`); } }
+function updateTVI(trade, windowSize) { const state = tviState[windowSize]; let removedTrade = null; if (state.queue.length >= windowSize) { removedTrade = state.queue.shift(); } state.queue.push(trade); if (trade.m) { state.sellVol += trade.q; } else { state.buyVol += trade.q; } if (removedTrade) { if (removedTrade.m) { state.sellVol -= removedTrade.q; } else { state.buyVol -= removedTrade.q; } } const totalVol = state.buyVol + state.sellVol; const currentTVI = totalVol > 0 ? (state.buyVol - state.sellVol) / totalVol : 0; const deltaTVI = currentTVI - state.lastTVI; state.lastTVI = currentTVI; return { tvi: currentTVI, delta_tvi: deltaTVI }; }
+function updateTradeFreq(tradeTime, windowSize) { const state = tradeFreqState[windowSize]; state.queue.push(tradeTime); if (state.queue.length > windowSize) { state.queue.shift(); } if (state.queue.length < windowSize) return 0; const timeElapsed = (state.queue[windowSize - 1] - state.queue[0]) / 1000; return timeElapsed > 0 ? windowSize / timeElapsed : 0; }
+function updateBaseline(tradeTime) { const tradeSecond = Math.floor(tradeTime / 1000); if (tradeSecond > currentSecondTimestamp) { const secondsElapsed = Math.min(tradeSecond - currentSecondTimestamp, BASELINE_WINDOW_SECONDS); for (let i = 0; i < secondsElapsed; i++) { currentBucketIndex = (currentBucketIndex + 1) % BASELINE_WINDOW_SECONDS; totalTrades5Min -= secondBuckets[currentBucketIndex]; secondBuckets[currentBucketIndex] = 0; } currentSecondTimestamp = tradeSecond; } secondBuckets[currentBucketIndex]++; totalTrades5Min++; }
+function createFinalPayload(tradeData, score, bias, flowFeatures, baselineFreq) { return { type: "prediction_score", timestamp_utc: new Date(tradeData.E).toISOString(), event_timestamp_exchange: tradeData.E, model_version: MODEL_VERSION, prediction: { score: parseFloat(score.toFixed(4)), bias: bias, }, features: { liquidity_pressure: { source_timestamp: lastBookFeatures.source_timestamp, wmp_mid_diff: parseFloat(lastBookFeatures.wmp_mid_diff.toFixed(4)), spread_normalized: parseFloat(lastBookFeatures.spread_normalized.toFixed(4)), }, trade_flow_short_term: { window_size: 5, tvi: parseFloat(flowFeatures[5].tvi.toFixed(4)), delta_tvi: parseFloat(flowFeatures[5].delta_tvi.toFixed(4)), frequency_normalized: parseFloat(flowFeatures[5].freq_norm.toFixed(4)), }, trade_flow_medium_term: { window_size: 20, tvi: parseFloat(flowFeatures[20].tvi.toFixed(4)), delta_tvi: parseFloat(flowFeatures[20].delta_tvi.toFixed(4)), frequency_normalized: parseFloat(flowFeatures[20].freq_norm.toFixed(4)), }, market_context: { baseline_freq_5min: parseFloat(baselineFreq.toFixed(2)), } } }; }
+function sendToInternalClient(payload) { if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) { try { internalWsClient.send(JSON.stringify(payload)); } catch (sendError) { console.error(`[Predictor] Error sending data to internal receiver: ${sendError.message}`); } } }
+function connectToBinanceStream() { if (binanceWsClient && (binanceWsClient.readyState === WebSocket.OPEN || binanceWsClient.readyState === WebSocket.CONNECTING)) return; initializeState(); binanceWsClient = new WebSocket(BINANCE_STREAM_URL); binanceWsClient.on('open', () => console.log(`[Predictor] Connected to Binance stream: ${BINANCE_STREAM_URL}`)); binanceWsClient.on('message', function incoming(data) { try { const message = JSON.parse(data.toString()); if (message.stream.includes('@depth5')) { processDepthUpdate(message.data); } else if (message.stream.includes('@trade')) { processTrade(message.data); } } catch (e) { console.error(`[Predictor] CRITICAL ERROR in message handler: ${e.message}`, e.stack); } }); binanceWsClient.on('error', (err) => console.error(`[Predictor] Binance WebSocket error: ${err.message}`)); binanceWsClient.on('close', () => { console.log('[Predictor] Binance connection closed. Reconnecting...'); binanceWsClient = null; setTimeout(connectToBinanceStream, RECONNECT_INTERVAL_MS); }); }
+
+// --- Start the connections ---
+connectToInternalReceiver();
+connectToBinanceStream();
+
+console.log(`[Predictor] PID: ${process.pid} --- Predictive Indicator Started for ${SYMBOL}`);
+// --- END OF FILE binance_listener.js ---
