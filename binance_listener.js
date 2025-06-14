@@ -40,7 +40,7 @@ function cleanupAndExit(exitCode = 1) {
 const SYMBOL = 'BTCUSDT';
 const OKX_SYMBOL = 'BTC-USDT';
 const RECONNECT_INTERVAL_MS = 5000;
-const AVG_PRICE_CHANGE_THRESHOLD = 1.0;
+const AVG_PRICE_CHANGE_THRESHOLD = 0.5;
 const internalReceiverUrl = 'ws://localhost:8082';
 
 // --- Exchange Stream URLs and Subscription Messages ---
