@@ -36,7 +36,7 @@ const OKX_SYMBOL = 'BTC-USDT';
 const KUCOIN_SYMBOL = 'BTC-USDT';
 const RECONNECT_INTERVAL_MS = 5000;
 const AVG_PRICE_CHANGE_THRESHOLD = 1.0;
-const KUCOIN_PRICE_CHANGE_THRESHOLD = 1.0;
+const KUCOIN_PRICE_CHANGE_THRESHOLD = 0.5;
 const internalReceiverUrl = 'ws://localhost:8082';
 
 // --- Exchange Stream URLs ---
