@@ -53,8 +53,8 @@ const IMBALANCE_LONG_WINDOW = 15;
 const IMBALANCE_HISTORY_SIZE = IMBALANCE_LONG_WINDOW;
 
 // Parameters tuned for HYPER responsiveness based on log data
-const URGENCY_TRADE_HISTORY_SIZE = 4; // Look at the last 4 trades for participation
-const VWAP_CALCULATION_WINDOW = 4;    // Calculate VWAP over the last 4 trades for progression
+const URGENCY_TRADE_HISTORY_SIZE = 6; // Look at the last 4 trades for participation
+const VWAP_CALCULATION_WINDOW = 6;    // Calculate VWAP over the last 4 trades for progression
 
 const MIN_IMBALANCE_FOR_URGENCY = 0.7;
 
