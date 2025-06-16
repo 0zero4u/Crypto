@@ -38,7 +38,7 @@ const STREAM_NAME = `${SYMBOL.toLowerCase()}@bookTicker`;
 const BINANCE_STREAM_URL = `wss://stream.binance.com:9443/ws/${STREAM_NAME}`;
 
 // --- BBO-Only Predictive Model Parameters ---
-const SIGNAL_THRESHOLD = 0.001;
+const SIGNAL_THRESHOLD = 0.01;
 const HYSTERESIS_BUFFER = 0.0002;
 
 // --- State Variables ---
