@@ -40,7 +40,7 @@ const BINANCE_STREAM_URL = `wss://stream.binance.com:9443/ws/${STREAM_NAME}`;
 // --- BBO-Only Predictive Model Parameters ---
 const SIGNAL_THRESHOLD = 0.0001; 
 const STRONG_SIGNAL_THRESHOLD_MULTIPLIER = 2.0;
-const HYSTERESIS_BUFFER = 0.0002;
+const HYSTERESIS_BUFFER = 0.00002;
 // <<< NEW: Threshold to prevent strong signals without momentum confirmation
 const MOMENTUM_CONFIRMATION_WEIGHT_THRESHOLD = 0.15; // Require at least 15% delta weight for a STRONG signal
 
