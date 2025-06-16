@@ -38,7 +38,7 @@ const STREAM_NAME = `${SYMBOL.toLowerCase()}@bookTicker`;
 const BINANCE_STREAM_URL = `wss://stream.binance.com:9443/ws/${STREAM_NAME}`;
 
 // --- BBO-Only Predictive Model Parameters ---
-const SIGNAL_THRESHOLD = 0.000099; // This is the baseline for a "WEAK" signal (where score = 1.0)
+const SIGNAL_THRESHOLD = 0.00090; // This is the baseline for a "WEAK" signal (where score = 1.0)
 const STRONG_SIGNAL_THRESHOLD_MULTIPLIER = 2.0; // A score of 2.0 or higher is "STRONG"
 const HYSTERESIS_BUFFER = 0.000002;
 
