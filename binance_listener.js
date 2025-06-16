@@ -35,7 +35,7 @@ const internalReceiverUrl = 'ws://localhost:8082';
 const RECONNECT_INTERVAL_MS = 5000;
 
 // --- DYNAMIC Liquidity Delta Model Parameters ---
-const DELTA_MA_PERIOD = 100; // The number of recent deltas to average.
+const DELTA_MA_PERIOD = 20; // The number of recent deltas to average.
 const THRESHOLD_MULTIPLIER = 3.0; // Trigger signal if delta is 3x the average delta. Tune this!
 const STREAM_NAME = `${SYMBOL.toLowerCase()}@bookTicker`;
 const BINANCE_STREAM_URL = `wss://stream.binance.com:9443/ws/${STREAM_NAME}`;
