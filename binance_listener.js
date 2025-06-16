@@ -42,7 +42,7 @@ const SIGNAL_THRESHOLD = 0.0001;
 const STRONG_SIGNAL_THRESHOLD_MULTIPLIER = 2.0;
 const HYSTERESIS_BUFFER = 0.00002;
 // <<< NEW: Threshold to prevent strong signals without momentum confirmation
-const MOMENTUM_CONFIRMATION_WEIGHT_THRESHOLD = 0.60; // Require at least 15% delta weight for a STRONG signal
+const MOMENTUM_CONFIRMATION_WEIGHT_THRESHOLD = 0.30; // Require at least 15% delta weight for a STRONG signal
 
 // --- Dynamic Delta Imbalance Parameters ---
 // <<< MODIFIED: Increased the baseline weight for the delta score
