@@ -28,7 +28,7 @@ function cleanupAndExit(exitCode = 1) {
 // --- Listener Configuration ---
 const OKX_SYMBOL = 'BTC-USDT';
 const RECONNECT_INTERVAL_MS = 5000;
-const PRICE_CHANGE_THRESHOLD = 0.01;
+const PRICE_CHANGE_THRESHOLD = 0.1;
 const internalReceiverUrl = 'ws://localhost:8082'; // Restored internal client URL
 
 // --- Exchange Stream URL ---
