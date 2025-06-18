@@ -1,13 +1,3 @@
-/**
- * @file binance_listener.js
- * @purpose A predictive leading indicator for short-term price movements on Binance Spot.
- * @philosophy This script operates on the principle that quantity behavior at stable price levels
- *             precedes and predicts price movement. It is intentionally NOT reactive to price ticks.
- *             Instead, it analyzes the setup (the cause) before the price move (the effect).
- *             It generates two types of messages for the client:
- *             1. Predictive signals ('PRED') based on a cumulative score of market microstructure events.
- *             2. Immediate price updates ('p') whenever the best bid price changes.
- */
 
 const WebSocket = require('ws');
 
