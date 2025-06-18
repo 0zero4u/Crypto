@@ -44,7 +44,7 @@ const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
 
 // --- Prediction Model Configuration ---
-const N_WINDOW_SIZE = 15;
+const N_WINDOW_SIZE = 25;
 // "Imbalance Dominator" Weights. Bullish: 60%, Bearish: 40%.
 // This model heavily prioritizes order book imbalance as the main driver for signals.
 const ALPHA = 4.0,   // Imbalance (Represents 50% of influence)
@@ -54,7 +54,7 @@ const ALPHA = 4.0,   // Imbalance (Represents 50% of influence)
       EPSILON = 2.5; // Sequential Rug Pull (Represents 25% of influence)
 const FUZZY_MATCH_PERCENTAGE = 0.15;
 const RUG_PULL_WINDOW_TICKS = 5;
-const RUG_PULL_SPIKE_THRESHOLD = 3.0;
+const RUG_PULL_SPIKE_THRESHOLD = 8.0;
 
 // --- Combined Score Configuration ---
 const CUMULATIVE_SCORE_THRESHOLD_BUY = 70.0;  // Increased threshold to reduce signal frequency
