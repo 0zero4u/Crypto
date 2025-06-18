@@ -16,7 +16,7 @@ process.on('unhandledRejection', (reason, promise) => {
 // --- State Management ---
 function cleanupAndExit(exitCode = 1) {
     // Terminate both WebSocket clients
-    const clientsToTerminate = [internalWsClient, okxWsClient];
+    const clientsToTerminate = [internalWsClient, binanceWsClient];
     clientsToTerminate.forEach(client => {
         if (client && typeof client.terminate === 'function') {
             try { client.terminate(); } catch (e) { console.error(`[Listener] Error terminating a WebSocket client: ${e.message}`); }
@@ -26,48 +26,39 @@ function cleanupAndExit(exitCode = 1) {
 }
 
 // --- Listener Configuration ---
-const OKX_SYMBOL = 'BTC-USDT';
+const BINANCE_SYMBOL = 'btcusdt'; // Binance uses lowercase without the dash
 const RECONNECT_INTERVAL_MS = 5000;
-const PRICE_CHANGE_THRESHOLD = 0.1;
-const internalReceiverUrl = 'ws://localhost:8082'; // Restored internal client URL
+// A "valid tick change" is defined as a price movement of at least this amount.
+// For BTC/USDT, 0.1 represents a $0.10 change. Adjust as needed.
+const MINIMUM_TICK_SIZE = 0.1;
+const internalReceiverUrl = 'ws://localhost:8082';
 
 // --- Exchange Stream URL ---
-const OKX_STREAM_URL = 'wss://ws.okx.com:8443/ws/v5/public';
+const BINANCE_STREAM_URL = `wss://stream.binance.com:9443/ws/${BINANCE_SYMBOL}@bookTicker`;
 
 // --- Listener State Variables ---
-let internalWsClient = null; // Restored internal client variable
-let okxWsClient = null;
+let internalWsClient = null;
+let binanceWsClient = null;
 let last_sent_price = null;
 
-// --- Internal Receiver Connection (Restored) ---
+// --- Internal Receiver Connection ---
 function connectToInternalReceiver() {
     if (internalWsClient && (internalWsClient.readyState === WebSocket.OPEN || internalWsClient.readyState === WebSocket.CONNECTING)) return;
-    // console.error(`[Internal] Attempting to connect to receiver at ${internalReceiverUrl}`); // Removed informational log
     internalWsClient = new WebSocket(internalReceiverUrl);
 
-    internalWsClient.on('open', () => {
-        // console.error('[Internal] Connection to receiver established.'); // Removed informational log
-    });
-
-    internalWsClient.on('error', (err) => {
-        console.error(`[Internal] WebSocket error: ${err.message}`);
-        // The close event will handle reconnecting
-    });
-
+    internalWsClient.on('open', () => { /* Connection established */ });
+    internalWsClient.on('error', (err) => console.error(`[Internal] WebSocket error: ${err.message}`));
     internalWsClient.on('close', () => {
-        // console.error('[Internal] Connection to receiver closed. Reconnecting...'); // Removed informational log
         internalWsClient = null;
         setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
     });
 }
 
-// --- Data Forwarding to Internal Client (Restored) ---
+// --- Data Forwarding to Internal Client ---
 function sendToInternalClient(payload) {
     if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
         try {
-            const dataToSend = JSON.stringify(payload);
-            // console.error(`[OKX Listener] Forwarding to internal client: ${dataToSend}`); // Removed verbose log
-            internalWsClient.send(dataToSend);
+            internalWsClient.send(JSON.stringify(payload));
         } catch (e) {
             console.error(`[Internal] Failed to send message: ${e.message}`);
         }
@@ -76,71 +67,60 @@ function sendToInternalClient(payload) {
     }
 }
 
-// --- OKX Data Processing ---
-function processOkxPrice(current_price) {
+// --- Binance Data Processing ---
+function processBinancePrice(current_price) {
     let shouldSend = false;
 
+    // Always send the first price received after a connection.
     if (last_sent_price === null) {
         shouldSend = true;
     } else {
+        // Only send if the price change is significant enough.
         const price_difference = Math.abs(current_price - last_sent_price);
-        if (price_difference >= PRICE_CHANGE_THRESHOLD) {
+        if (price_difference >= MINIMUM_TICK_SIZE) {
             shouldSend = true;
         }
     }
     
     if (shouldSend) {
         const pricePayload = { p: current_price };
-        sendToInternalClient(pricePayload); // Send to internal client, not console.log
+        sendToInternalClient(pricePayload);
         last_sent_price = current_price;
     }
 }
 
-// --- OKX Exchange Connection Function ---
-function connectToOkx() {
-    const OKX_SUBSCRIBE_MSG = JSON.stringify({ op: "subscribe", args: [{ channel: "bbo-tbt", instId: OKX_SYMBOL }] });
-    okxWsClient = new WebSocket(OKX_STREAM_URL);
+// --- Binance Exchange Connection Function ---
+function connectToBinance() {
+    binanceWsClient = new WebSocket(BINANCE_STREAM_URL);
 
-    okxWsClient.on('open', () => {
-        // console.error("[OKX Listener] WebSocket connection opened. Subscribing to ticker..."); // Removed informational log
+    binanceWsClient.on('open', () => {
+        // Reset last price on new connection to ensure the first tick is always sent.
         last_sent_price = null;
-        okxWsClient.send(OKX_SUBSCRIBE_MSG);
     });
 
-    okxWsClient.on('message', (data) => {
-        const messageString = data.toString();
-
-        if (messageString === 'ping') {
-            if (okxWsClient.readyState === WebSocket.OPEN) okxWsClient.send('pong');
-            return;
-        }
+    binanceWsClient.on('message', (data) => {
         try {
-            const message = JSON.parse(messageString);
-            if (message.event === 'subscribe') {
-                 // console.error(`[OKX Listener] Successfully subscribed to ${message.arg.channel}`); // Removed informational log
-                 return;
+            const message = JSON.parse(data.toString());
+            // 'b' is the best bid price in the Binance bookTicker stream
+            const bestBid = message.b; 
+            if (bestBid) {
+                processBinancePrice(parseFloat(bestBid));
             }
-            if (message.arg?.channel === 'bbo-tbt' && message.data?.[0]) {
-                const bestBid = message.data[0].bids?.[0]?.[0];
-                if (bestBid) {
-                    processOkxPrice(parseFloat(bestBid));
-                }
-            }
-        } catch (e) { /* Silently ignore non-JSON messages */ }
+        } catch (e) {
+            // Silently ignore non-JSON messages or parsing errors
+        }
     });
 
-    okxWsClient.on('error', (err) => {
-        console.error('[OKX Listener] WebSocket connection error:', err.message);
+    binanceWsClient.on('error', (err) => {
+        console.error('[Binance Listener] WebSocket connection error:', err.message);
     });
 
-    okxWsClient.on('close', (code, reason) => {
-        // console.error(`[OKX Listener] WebSocket connection closed. Code: ${code}, Reason: ${reason}. Reconnecting...`); // Removed informational log
-        okxWsClient = null;
-        setTimeout(connectToOkx, RECONNECT_INTERVAL_MS);
+    binanceWsClient.on('close', () => {
+        binanceWsClient = null;
+        setTimeout(connectToBinance, RECONNECT_INTERVAL_MS);
     });
 }
 
 // --- Start all connections ---
-// console.error(`[OKX Listener] Starting script with price change threshold: ${PRICE_CHANGE_THRESHOLD}`); // Removed informational log
-connectToInternalReceiver(); // Start connecting to the internal receiver
-connectToOkx();              // Start connecting to the exchange
+connectToInternalReceiver();
+connectToBinance();
