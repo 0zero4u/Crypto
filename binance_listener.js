@@ -57,8 +57,8 @@ const RUG_PULL_WINDOW_TICKS = 5;
 const RUG_PULL_SPIKE_THRESHOLD = 3.0;
 
 // --- Combined Score Configuration ---
-const CUMULATIVE_SCORE_THRESHOLD_BUY = 50.0;  // Increased threshold to reduce signal frequency
-const CUMULATIVE_SCORE_THRESHOLD_SELL = -50.0; // Increased threshold to reduce signal frequency
+const CUMULATIVE_SCORE_THRESHOLD_BUY = 70.0;  // Increased threshold to reduce signal frequency
+const CUMULATIVE_SCORE_THRESHOLD_SELL = -70.0; // Increased threshold to reduce signal frequency
 const SMOOTHING_FACTOR = 0.1; // (Range 0-1) How much weight to give the new score. Lower = smoother.
 
 // --- Connection URLs ---
