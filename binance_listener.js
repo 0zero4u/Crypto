@@ -47,8 +47,8 @@ const RECONNECT_INTERVAL_MS = 5000;
 const N_WINDOW_SIZE = 40;
 // "Imbalance Dominator" Weights. Bullish: 60%, Bearish: 40%.
 // This model heavily prioritizes order book imbalance as the main driver for signals.
-const ALPHA = 6.0,   // Imbalance (Represents 50% of influence)
-      BETA = 2.0,    // Absorption (Represents 7.5% of influence)
+const ALPHA = 3.0,   // Imbalance (Represents 50% of influence)
+      BETA = 1.0,    // Absorption (Represents 7.5% of influence)
       GAMMA = 8.0,   // Disappearance Risk (Weight for normalized 0-1 score). Ask risk is bullish, Bid risk is bearish.
       DELTA = 2.0,   // Stacking (Represents 10% of influence)
       EPSILON = 2.5; // Sequential Rug Pull (Represents 25% of influence)
