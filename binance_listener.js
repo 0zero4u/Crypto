@@ -44,7 +44,7 @@ const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
 
 // --- Prediction Model Configuration ---
-const N_WINDOW_SIZE = 25;
+const N_WINDOW_SIZE = 40;
 // "Imbalance Dominator" Weights. Bullish: 60%, Bearish: 40%.
 // This model heavily prioritizes order book imbalance as the main driver for signals.
 const ALPHA = 4.0,   // Imbalance (Represents 50% of influence)
