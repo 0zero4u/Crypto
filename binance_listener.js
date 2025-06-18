@@ -45,7 +45,7 @@ const RECONNECT_INTERVAL_MS = 5000;
 
 // --- Prediction Model Configuration ---
 const N_WINDOW_SIZE = 15;
-const ALPHA = 1.0, BETA = 1.5, GAMMA = 2.0, DELTA = 1.2, EPSILON = 2.5;
+const ALPHA = 1.0, BETA = 1.5, GAMMA = 2.0, DELTA = 1.2, EPSILON = 2.5; // ALPHA [ Imbalance],
 const FUZZY_MATCH_PERCENTAGE = 0.15;
 const RUG_PULL_WINDOW_TICKS = 5;
 const RUG_PULL_SPIKE_THRESHOLD = 3.0;
