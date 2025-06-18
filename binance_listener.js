@@ -37,7 +37,7 @@ function cleanupAndExit(exitCode = 1) {
 const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
 const MINIMUM_TICK_SIZE = 0.1;
-const MINIMUM_SCORE_THRESHOLD = 87;  // Applied to the rolling average score
+const MINIMUM_SCORE_THRESHOLD = 30;  // Applied to the rolling average score
 const MONITORING_WINDOW_MS = 100;    // Timeout for a spot confirmation to arrive
 const ROLLING_AVERAGE_SIZE = 3;      // NEW: Total number of scores to average (current + last 2)
 
