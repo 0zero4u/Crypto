@@ -44,7 +44,7 @@ const MONITORING_WINDOW_MS = 100;
 // --- ADDED: Trend Score Configuration ---
 const TREND_SCORE_INITIAL = 200;  // Neutral score
 const TREND_SCORE_INCREMENT = 5;   // Points to add/subtract per signal
-const TREND_SCORE_MAX = 600;      // Upper bound (strong buy trend)
+const TREND_SCORE_MAX = 5000;      // Upper bound (strong buy trend)
 const TREND_SCORE_MIN = 1;        // Lower bound (strong sell trend)
 
 // --- Connection URLs ---
