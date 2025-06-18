@@ -37,7 +37,7 @@ function cleanupAndExit(exitCode = 1) {
 const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
 const MINIMUM_TICK_SIZE = 0.1;
-const IMBALANCE_THRESHOLD = 0.6; // Initial check for favorable direction
+const IMBALANCE_THRESHOLD = 0.8; // Initial check for favorable direction
 const MINIMUM_SCORE_THRESHOLD = 75;  // Final check for signal strength
 const MONITORING_WINDOW_MS = 100;
 
