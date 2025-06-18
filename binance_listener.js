@@ -42,9 +42,9 @@ const MONITORING_WINDOW_MS = 100;
 
 // --- Predictive Model Configuration ---
 const MICRO_PRICE_SIGNAL_THRESHOLD = 0.001;
-const MICRO_PRICE_NORMALIZATION_CAP = 0.004;
+const MICRO_PRICE_NORMALIZATION_CAP = 0.0004;
 // --- NEW: Basis Model Configuration ---
-const BASIS_NORMALIZATION_CAP = 50.0; // A basis of $50 (positive or negative) maps to a score of 100.
+const BASIS_NORMALIZATION_CAP = 48.0; // A basis of $50 (positive or negative) maps to a score of 100.
 
 // --- NEW: Rebalanced Score Weights (Must sum to 1.0) ---
 const WEIGHT_IMBALANCE = 0.4;
@@ -52,7 +52,7 @@ const WEIGHT_MICRO_PRICE = 0.4;
 const WEIGHT_BASIS = 0.2; // Basis is a contextual factor, given a lower weight.
 
 // --- Final Signal Filter ---
-const MINIMUM_COMBINED_SCORE_THRESHOLD = 87;
+const MINIMUM_COMBINED_SCORE_THRESHOLD = 75;
 
 // --- Connection URLs ---
 const internalReceiverUrl = 'ws://localhost:8082';
