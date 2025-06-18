@@ -36,7 +36,7 @@ const RECONNECT_INTERVAL_MS = 5000;
 // --- Prediction Model Configuration ---
 const N_WINDOW_SIZE = 15;
 // "Balanced Strategist" Weights. Total Bullish Influence (ALPHA+DELTA) = 50%. Total Bearish (EPSILON+GAMMA+BETA) = 50%.
-const ALPHA = 3.0, BETA = 1.0, GAMMA = 1.5, DELTA = 2.0, EPSILON = 2.5; // % Influence: Imb(30), Abs(10), Dis(15), Stk(20), Rug(25)
+const ALPHA = 3.5, BETA = 1.0, GAMMA = 1.5, DELTA = 2.0, EPSILON = 2.0; // % Influence: Imb(30), Abs(10), Dis(15), Stk(20), Rug(25)
 const FUZZY_MATCH_PERCENTAGE = 0.15;
 const RUG_PULL_WINDOW_TICKS = 5;
 const RUG_PULL_SPIKE_THRESHOLD = 3.0;
