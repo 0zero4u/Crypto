@@ -42,8 +42,8 @@ const RUG_PULL_WINDOW_TICKS = 5;
 const RUG_PULL_SPIKE_THRESHOLD = 3.0;
 
 // --- Combined Score Configuration ---
-const CUMULATIVE_SCORE_THRESHOLD_BUY = 5.0;  // Threshold for the combined score to trigger a BUY
-const CUMULATIVE_SCORE_THRESHOLD_SELL = -5.0; // Threshold for the combined score to trigger a SELL
+const CUMULATIVE_SCORE_THRESHOLD_BUY = 10.0;  // Threshold for the combined score to trigger a BUY
+const CUMULATIVE_SCORE_THRESHOLD_SELL = -10.0; // Threshold for the combined score to trigger a SELL
 const SMOOTHING_FACTOR = 0.1; // (Range 0-1) How much weight to give the new score. Lower = smoother.
 
 // --- Connection URLs ---
