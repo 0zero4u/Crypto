@@ -48,8 +48,8 @@ const TREND_SCORE_MAX = 5000;      // Upper bound (strong buy trend)
 const TREND_SCORE_MIN = 1;        // Lower bound (strong sell trend)
 
 // --- Rate Limiting Configuration ---
-const RATE_LIMIT_MAX_MESSAGES = 2;
-const RATE_LIMIT_WINDOW_MS = 200;
+const RATE_LIMIT_MAX_MESSAGES = 3;
+const RATE_LIMIT_WINDOW_MS = 250;
 
 // --- Connection URLs ---
 const internalReceiverUrl = 'ws://localhost:8082';
