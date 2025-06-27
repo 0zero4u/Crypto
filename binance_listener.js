@@ -52,7 +52,7 @@ const RATE_LIMIT_MAX_MESSAGES = 3;
 const RATE_LIMIT_WINDOW_MS = 250;
 
 // --- Connection URLs ---
-const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8080';
+const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082';
 const SPOT_STREAM_URL = `wss://stream.binance.com:9443/ws/${SYMBOL}@bookTicker`;
 const FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@bookTicker`;
 
