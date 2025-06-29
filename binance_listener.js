@@ -1,5 +1,5 @@
 const WebSocket = require('ws');
-const kcp = require('ikc-ts');
+const kcp = require('node-kcp-x');
 const dgram = require('dgram');
 
 // --- Global Error Handlers ---
