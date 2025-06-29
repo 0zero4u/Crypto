@@ -1,5 +1,5 @@
 const WebSocket = require('ws');
-const kcp = require('kcp-ts');
+const kcp = require('ikc-ts');
 const dgram = require('dgram');
 
 const PUBLIC_PORT = 8081;
