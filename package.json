@@ -28,6 +28,6 @@
   "license": "ISC",
   "dependencies": {
     "ws": "^8.17.0",
-    "kcp": "^3.1.2"
+    "kcp": "^4.1.2"
   }
 }
