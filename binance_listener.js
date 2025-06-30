@@ -37,7 +37,7 @@ const MINIMUM_TICK_SIZE = 0.1;
 
 // --- Connection URLs ---
 // IMPORTANT: Replace with the INTERNAL IP of your receiver VM ("vm49")
-const internalReceiverUrl = 'ws://<IP_OF_YOUR_RECEIVER_VM49>:8082';
+const internalReceiverUrl ='ws://instance-20250630-124122.asia-southeast1-a.c.ace-server-460719-b7.internal:8082';
 const BYBIT_STREAM_URL = 'wss://stream.bybit.com/v5/public/spot';
 
 // --- Listener State Variables ---
