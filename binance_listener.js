@@ -37,7 +37,7 @@ const RECONNECT_INTERVAL_MS = 5000;
 const MINIMUM_TICK_SIZE = 0.1;
 
 // --- Connection URLs ---
-const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082';
+const internalReceiverUrl = 'ws://instance-20250630-124122.asia-southeast1-a.c.ace-server-460719-b7.internal:8082';
 // ** MODIFIED: Using Bybit V5 Public Spot WebSocket URL **
 const BYBIT_STREAM_URL = 'wss://stream.bybit.com/v5/public/spot';
 
