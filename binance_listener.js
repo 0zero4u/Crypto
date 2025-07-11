@@ -33,7 +33,7 @@ function cleanupAndExit(exitCode = 1) {
 // --- Listener Configuration ---
 const SYMBOL = 'BTCUSDT';
 const RECONNECT_INTERVAL_MS = 5000;
-const SEND_INTERVAL_MS = 100;
+const SEND_INTERVAL_MS = 60;
 
 // --- Connection URLs ---
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082';
