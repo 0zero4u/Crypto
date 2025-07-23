@@ -16,7 +16,7 @@ process.on('unhandledRejection', (reason, promise) => {
 // --- State Management ---
 function cleanupAndExit(exitCode = 1) {
     // Terminate only the clients that are still in use.
-    const clientsToTerminate = [internalWsClient, bybitWsClient]; // Updated variable name
+    const clientsToTerminate = [internalWsClient, binanceWsClient]; // Updated variable name
     
     console.error('[Listener] Initiating cleanup...');
     clientsToTerminate.forEach(client => {
@@ -32,18 +32,19 @@ function cleanupAndExit(exitCode = 1) {
 }
 
 // --- Listener Configuration ---
-const SYMBOL = 'BTCUSDT'; // Bybit uses uppercase symbols
+// ** MODIFIED: Binance uses lowercase symbols for streams **
+const SYMBOL = 'btcusdt'; 
 const RECONNECT_INTERVAL_MS = 5000;
 const MINIMUM_TICK_SIZE = 0.1;
 
 // --- Connection URLs ---
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082';
-// ** MODIFIED: Using Bybit V5 Public Spot WebSocket URL **
-const BYBIT_STREAM_URL = 'wss://stream.bybit.com/v5/public/spot';
+// ** MODIFIED: Using Binance Futures Trade Stream URL **
+const BINANCE_FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@trade`;
 
 // --- Listener State Variables ---
-let internalWsClient, bybitWsClient; // Renamed for clarity
-let last_sent_spot_bid_price = null; // Tracks the last bid price that triggered a signal
+let internalWsClient, binanceWsClient; // Renamed for clarity
+let last_sent_trade_price = null; // Tracks the last trade price that triggered a signal
 
 // --- Internal Receiver Connection ---
 function connectToInternalReceiver() {
@@ -67,84 +68,68 @@ function sendToInternalClient(payload) {
     }
 }
 
-// --- Bybit Exchange Connection (Previously Spot Exchange) ---
-function connectToBybit() {
-    bybitWsClient = new WebSocket(BYBIT_STREAM_URL);
+// --- Binance Futures Connection (Previously Bybit) ---
+function connectToBinance() {
+    binanceWsClient = new WebSocket(BINANCE_FUTURES_STREAM_URL);
     
-    bybitWsClient.on('open', () => {
-        console.log('[Bybit] Connection established.');
-        last_sent_spot_bid_price = null; // Reset on new connection
-
-        // ** ADDED: Send subscription message for Bybit orderbook **
-        const subscriptionMessage = {
-            op: "subscribe",
-            args: [`orderbook.1.${SYMBOL}`]
-        };
-        bybitWsClient.send(JSON.stringify(subscriptionMessage));
-        console.log(`[Bybit] Sent subscription for: ${subscriptionMessage.args[0]}`);
+    binanceWsClient.on('open', () => {
+        console.log(`[Binance] Connection established. Subscribed to stream: ${SYMBOL}@trade`);
+        last_sent_trade_price = null; // Reset on new connection
+        // NOTE: For Binance, subscription is done via the URL. No subscription message is needed.
+        // NOTE: The 'ws' library handles ping/pong with Binance automatically.
     });
     
-    bybitWsClient.on('message', (data) => {
+    binanceWsClient.on('message', (data) => {
         try {
             const message = JSON.parse(data.toString());
 
-            // ** ADDED: Bybit requires a pong response to their ping to keep connection alive **
-            if (message.op === 'ping') {
-                bybitWsClient.send(JSON.stringify({ op: 'pong', req_id: message.req_id }));
-                return;
-            }
-
-            // ** MODIFIED: Check for actual orderbook data from Bybit **
-            // We only care about messages with a 'topic' key that contains our data.
-            if (message.topic && message.topic.startsWith('orderbook.1') && message.data) {
-                // Bybit's top bid price is in data.b[0][0] -> [price, size]
-                const topBid = message.data.b && message.data.b[0];
-                if (!topBid) return; // No bid data in this update
-
-                const current_spot_bid_price = parseFloat(topBid[0]);
+            // ** MODIFIED: Check for actual trade data from Binance Futures **
+            // We only care about messages with event type 'trade' and a price 'p'.
+            if (message.e === 'trade' && message.p) {
+                const current_trade_price = parseFloat(message.p);
                 
                 // Ensure we have a valid price to work with
-                if (!current_spot_bid_price) {
+                if (isNaN(current_trade_price)) {
                     return;
                 }
 
                 // On the very first message, set the initial baseline price and do nothing else.
-                if (last_sent_spot_bid_price === null) {
-                    last_sent_spot_bid_price = current_spot_bid_price;
+                if (last_sent_trade_price === null) {
+                    last_sent_trade_price = current_trade_price;
                     return;
                 }
 
                 // Calculate the price change since the last sent signal
-                const price_difference = current_spot_bid_price - last_sent_spot_bid_price;
+                const price_difference = current_trade_price - last_sent_trade_price;
 
                 // Check if the absolute price change meets the minimum tick size requirement
                 if (Math.abs(price_difference) >= MINIMUM_TICK_SIZE) {
                     // A valid tick has occurred. Prepare and send the payload.
                     const payload = { 
-                        type: 'S', // 'S' for Spot
-                        p: current_spot_bid_price 
+                        type: 'S', // 'S' for Spot/Signal is preserved for the internal client
+                        p: current_trade_price 
                     };
                     sendToInternalClient(payload);
                     
                     // Update the last sent price to the current price to set a new baseline
-                    last_sent_spot_bid_price = current_spot_bid_price;
+                    last_sent_trade_price = current_trade_price;
                 }
             }
         } catch (e) { 
-            console.error(`[Bybit] Error processing message: ${e.message}`);
+            console.error(`[Binance] Error processing message: ${e.message}`);
         }
     });
 
-    bybitWsClient.on('error', (err) => console.error('[Bybit] Connection error:', err.message));
+    binanceWsClient.on('error', (err) => console.error('[Binance] Connection error:', err.message));
     
-    bybitWsClient.on('close', () => {
-        console.error('[Bybit] Connection closed. Reconnecting...');
-        bybitWsClient = null;
-        setTimeout(connectToBybit, RECONNECT_INTERVAL_MS);
+    binanceWsClient.on('close', () => {
+        console.error('[Binance] Connection closed. Reconnecting...');
+        binanceWsClient = null;
+        setTimeout(connectToBinance, RECONNECT_INTERVAL_MS);
     });
 }
 
 // --- Start all connections ---
 console.log(`[Listener] Starting... PID: ${process.pid}`);
 connectToInternalReceiver();
-connectToBybit(); // Call the updated function
+connectToBinance(); // Call the updated function```
