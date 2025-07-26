@@ -1,223 +1,115 @@
-// data_receiver_server.js (Modified for minimal JSON string, adjusted heartbeats, and reduced logging)
-// CORRECTED VERSION: Removed restrictive internal IP check to allow cloud VM connections managed by firewall rules.
-
-const WebSocket = require('ws');
-
-const PUBLIC_PORT = 8081;
-const INTERNAL_LISTENER_PORT = 8082;
-// Adjusted Heartbeat Frequency: Ping every 120 seconds. Client has 120 seconds to respond with a pong.
-const ANDROID_CLIENT_HEARTBEAT_INTERVAL_MS = 120000;
-const SHUTDOWN_TIMEOUT_MS = 5000;
-
-// --- Global State ---
-let wssAndroidClients = null;
-let wssListenerSource = null;
-let shuttingDown = false;
-let forceExitTimer = null;
-
-// --- Unified Shutdown Logic ---
-function attemptServerClosure(server, serverName, onDone) {
-    if (!server) {
-        onDone();
-        return;
-    }
-
-    console.log(`[Receiver] PID: ${process.pid} --- Closing ${serverName} and terminating its clients...`);
-
-    if (server.clients && typeof server.clients.forEach === 'function') {
-        server.clients.forEach(client => {
-            if (client.readyState === WebSocket.OPEN) {
-                client.terminate();
-            }
-            if (client.heartbeatInterval) {
-                clearInterval(client.heartbeatInterval);
-            }
-        });
-    }
-
-    server.close((err) => {
-        if (err) {
-            console.error(`[Receiver] PID: ${process.pid} --- Error closing ${serverName}: ${err.message}`);
-        } else {
-            console.log(`[Receiver] PID: ${process.pid} --- ${serverName} closed.`);
-        }
-        onDone();
-    });
-}
-
-function initiateShutdown(signal, exitCode = 1) {
-    if (shuttingDown) {
-        return;
-    }
-    shuttingDown = true;
-    console.log(`\n[Receiver] PID: ${process.pid} --- ${signal} signal received. Initiating shutdown sequence...`);
-
-    if (forceExitTimer) clearTimeout(forceExitTimer);
-    forceExitTimer = setTimeout(() => {
-        console.error(`[Receiver] PID: ${process.pid} --- Shutdown timeout (${SHUTDOWN_TIMEOUT_MS}ms). Forcing exit.`);
-        process.exit(exitCode);
-    }, SHUTDOWN_TIMEOUT_MS).unref();
-
-    let serversPendingClosure = 0;
-    if (wssAndroidClients) serversPendingClosure++;
-    if (wssListenerSource) serversPendingClosure++;
-
-    if (serversPendingClosure === 0) {
-        console.log(`[Receiver] PID: ${process.pid} --- No servers were initialized or running. Exiting.`);
-        if (forceExitTimer) clearTimeout(forceExitTimer);
-        setTimeout(() => process.exit(exitCode), 200);
-        return;
-    }
-
-    const onServerProcessed = () => {
-        serversPendingClosure--;
-        if (serversPendingClosure <= 0) {
-            if (forceExitTimer) clearTimeout(forceExitTimer);
-            console.log(`[Receiver] PID: ${process.pid} --- All server shutdown procedures attempted. Exiting gracefully.`);
-            setTimeout(() => process.exit(exitCode), 200);
-        }
-    };
-
-    if (wssAndroidClients) {
-        attemptServerClosure(wssAndroidClients, 'Public WebSocket server (Android clients)', onServerProcessed);
-    }
-    if (wssListenerSource) {
-        attemptServerClosure(wssListenerSource, 'Internal WebSocket server (listener source)', onServerProcessed);
-    }
-}
+const uWS = require('uWebSockets.js');
+const { TextDecoder } = require('util'); // Built-in Node.js module
 
 // --- Global Error Handlers ---
+process.on('uncaughtException', (err, origin) => {
+    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNCAUGHT EXCEPTION`);
+    console.error(err.stack || err);
+    process.exit(1);
+});
 process.on('unhandledRejection', (reason, promise) => {
-  console.error(`[Receiver] PID: ${process.pid} --- FATAL: Unhandled Rejection at:`, promise, 'reason:', reason instanceof Error ? reason.stack : reason);
-  initiateShutdown('UNHANDLED_REJECTION', 1);
+    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNHANDLED PROMISE REJECTION`);
+    console.error('[Listener] Unhandled Rejection at:', promise);
+    console.error('[Listener] Reason:', reason instanceof Error ? reason.stack : reason);
+    process.exit(1);
 });
 
-process.on('uncaughtException', (error) => {
-  console.error(`[Receiver] PID: ${process.pid} --- FATAL: Uncaught Exception:`, error.stack || error);
-  initiateShutdown('UNCAUGHT_EXCEPTION', 1);
-});
+// --- Listener Configuration ---
+const SYMBOL = 'btcusdt';
+const RECONNECT_INTERVAL_MS = 5000;
+const MINIMUM_TICK_SIZE = 0.2;
+const decoder = new TextDecoder('utf-8');
 
-// --- Public WebSocket Server (for Android Clients) ---
-try {
-    wssAndroidClients = new WebSocket.Server({ port: PUBLIC_PORT });
-    console.log(`[Receiver] PID: ${process.pid} --- Public WebSocket server for Android clients started on port ${PUBLIC_PORT}`);
+// --- Connection URLs ---
+const internalReceiverHost = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
+const BINANCE_FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@trade`;
 
-    let androidClientCounter = 0;
+// --- Listener State Variables ---
+let internalWs = null;
+let last_sent_trade_price = null;
+const app = uWS.App({});
 
-    wssAndroidClients.on('connection', (ws, req) => {
-        ws.clientId = `android-${androidClientCounter++}`;
-        const clientIp = req.socket.remoteAddress || (req.headers['x-forwarded-for'] ? req.headers['x-forwarded-for'].toString().split(',')[0].trim() : null);
-        console.log(`[Receiver] PID: ${process.pid} --- Android client ${ws.clientId} (IP: ${clientIp || 'unknown'}) connected.`);
+// --- PERFORMANCE OPTIMIZATION: Reusable object to avoid GC overhead ---
+const reusablePayload = { type: 'S', p: 0 };
 
-        ws.isAlive = true;
-        ws.on('pong', () => {
-            ws.isAlive = true;
-        });
-
-        ws.heartbeatInterval = setInterval(() => {
-            if (!ws.isAlive) {
-                console.log(`[Receiver] PID: ${process.pid} --- Android client ${ws.clientId} (IP: ${clientIp || 'unknown'}) did not respond to ping. Terminating.`);
-                clearInterval(ws.heartbeatInterval);
-                return ws.terminate();
-            }
-            ws.isAlive = false;
-            try {
-                ws.ping(() => {});
-            } catch (pingError) {
-                console.error(`[Receiver] PID: ${process.pid} --- Error pinging Android client ${ws.clientId}: ${pingError.message}. Terminating.`);
-                clearInterval(ws.heartbeatInterval);
-                ws.terminate();
-            }
-        }, ANDROID_CLIENT_HEARTBEAT_INTERVAL_MS);
-
-        ws.on('message', (message) => {
-            // Android clients are not expected to send messages that require server processing in this setup
-        });
-
-        ws.on('close', (code, reason) => {
-            clearInterval(ws.heartbeatInterval);
-            const reasonStr = reason ? reason.toString() : 'N/A';
-            console.log(`[Receiver] PID: ${process.pid} --- Android client ${ws.clientId} (IP: ${clientIp || 'unknown'}) disconnected. Code: ${code}, Reason: ${reasonStr}`);
-        });
-
-        ws.on('error', (err) => {
-            clearInterval(ws.heartbeatInterval);
-            console.error(`[Receiver] PID: ${process.pid} --- Android client ${ws.clientId} (IP: ${clientIp || 'unknown'}) error: ${err.message}`);
-        });
-    });
-
-    wssAndroidClients.on('error', (err) => {
-        console.error(`[Receiver] PID: ${process.pid} --- Public WebSocket Server Error: ${err.message}`, err.stack || '');
-        initiateShutdown('PUBLIC_SERVER_ERROR', 1);
-    });
-
-} catch (e) {
-    console.error(`[Receiver] PID: ${process.pid} --- FATAL ERROR starting Public WebSocket server: ${e.message}`, e.stack || '');
-    initiateShutdown('PUBLIC_SERVER_INIT_FAILURE', 1);
+// --- Data Forwarding ---
+function sendToInternalClient(payload) {
+    if (internalWs && internalWs.getBufferedAmount() === 0) {
+        try {
+            internalWs.send(JSON.stringify(payload));
+        } catch (e) {
+            console.error(`[Internal] Failed to send message: ${e.message}`);
+        }
+    }
 }
 
-// --- Internal WebSocket Server (for binance_listener.js) ---
-try {
-    wssListenerSource = new WebSocket.Server({ port: INTERNAL_LISTENER_PORT });
-    console.log(`[Receiver] PID: ${process.pid} --- Internal WebSocket server (expecting minimal JSON strings) started on port ${INTERNAL_LISTENER_PORT}`);
+// --- Internal Receiver Connection ---
+function connectToInternalReceiver() {
+    console.log(`[Internal] Attempting to connect to ${internalReceiverHost}...`);
+    app.ws(internalReceiverHost, {
+        open: (ws) => {
+            console.log('[Internal] Connection established.');
+            internalWs = ws;
+        },
+        message: (ws, message, isBinary) => { /* Not expecting messages */ },
+        close: (ws, code, message) => {
+            console.error(`[Internal] Connection closed. Code: ${code}. Reconnecting in ${RECONNECT_INTERVAL_MS}ms...`);
+            internalWs = null;
+            setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
+        },
+        error: (ws, err) => {
+            console.error(`[Internal] Connection error: ${err}. Will attempt to reconnect on close.`);
+        }
+    });
+}
 
-    wssListenerSource.on('connection', (wsListener, req) => {
-        const listenerIp = req.socket.remoteAddress;
-
-        // The restrictive IP check that was here has been removed.
-        // Security is now handled by the Google Cloud firewall rules.
-
-        console.log(`[Receiver] PID: ${process.pid} --- binance_listener.js connected internally from ${listenerIp}`);
-
-        wsListener.on('message', (message) => {
+// --- Binance Futures Connection ---
+function connectToBinance() {
+    console.log(`[Binance] Attempting to connect to ${BINANCE_FUTURES_STREAM_URL}...`);
+    app.ws(BINANCE_FUTURES_STREAM_URL, {
+        idleTimeout: 65, // Handles Binance's ping interval
+        
+        open: (ws) => {
+            console.log(`[Binance] Connection established. Subscribed to stream: ${SYMBOL}@trade`);
+            last_sent_trade_price = null;
+        },
+        message: (ws, message, isBinary) => {
             try {
-                const minimalJsonStringFromListener = message.toString();
+                const trade = JSON.parse(decoder.decode(message));
 
-                if (!wssAndroidClients || !wssAndroidClients.clients) {
-                    console.error(`[Receiver] PID: ${process.pid} --- CRITICAL PRE-BROADCAST: wssAndroidClients or its clients set is null/undefined! Data not broadcasted.`);
-                    return;
-                }
+                if (trade.e === 'trade' && trade.p) {
+                    const current_trade_price = parseFloat(trade.p);
 
-                if (wssAndroidClients.clients.size > 0) {
-                    wssAndroidClients.clients.forEach(androidClient => {
-                        if (androidClient.readyState === WebSocket.OPEN) {
-                            try {
-                                androidClient.send(minimalJsonStringFromListener);
-                            } catch (sendError) {
-                                console.error(`[Receiver] PID: ${process.pid} --- Send Error to Android client ${androidClient.clientId || 'unknown'}: ${sendError.message}`);
-                            }
-                        }
-                    });
+                    if (isNaN(current_trade_price)) return;
+
+                    if (last_sent_trade_price === null) {
+                        last_sent_trade_price = current_trade_price;
+                        return;
+                    }
+
+                    const price_difference = current_trade_price - last_sent_trade_price;
+
+                    if (Math.abs(price_difference) >= MINIMUM_TICK_SIZE) {
+                        reusablePayload.p = current_trade_price;
+                        sendToInternalClient(reusablePayload);
+                        last_sent_trade_price = current_trade_price;
+                    }
                 }
             } catch (e) {
-                 console.error(`[Receiver] PID: ${process.pid} --- CRITICAL: ERROR in wsListener.on("message") processing: ${e.message}`, e.stack);
+                console.error(`[Binance] Error processing message: ${e.message}`);
             }
-        });
-
-        wsListener.on('close', (code, reason) => {
-            const reasonStr = reason ? reason.toString() : 'N/A';
-            console.log(`[Receiver] PID: ${process.pid} --- binance_listener.js disconnected internally from ${listenerIp}. Code: ${code}, Reason: ${reasonStr}`);
-        });
-
-        wsListener.on('error', (err) => {
-            console.error(`[Receiver] PID: ${process.pid} --- Error with internal binance_listener.js connection from ${listenerIp}: ${err.message}`);
-        });
+        },
+        close: (ws, code, message) => {
+            console.error(`[Binance] Connection closed. Code: ${code}. Reconnecting in ${RECONNECT_INTERVAL_MS}ms...`);
+            setTimeout(connectToBinance, RECONNECT_INTERVAL_MS);
+        },
+        error: (ws, err) => {
+            console.error(`[Binance] Connection error: ${err}. Will attempt to reconnect on close.`);
+        }
     });
-
-    wssListenerSource.on('error', (err) => {
-        console.error(`[Receiver] PID: ${process.pid} --- Internal WebSocket Server Error: ${err.message}`, err.stack || '');
-        initiateShutdown('INTERNAL_SERVER_ERROR', 1);
-    });
-
-} catch (e) {
-    console.error(`[Receiver] PID: ${process.pid} --- FATAL ERROR starting Internal WebSocket server: ${e.message}`, e.stack || '');
-    initiateShutdown('INTERNAL_SERVER_INIT_FAILURE', 1);
 }
 
-// --- Graceful Shutdown Signals ---
-process.on('SIGINT', () => initiateShutdown('SIGINT', 0));
-process.on('SIGTERM', () => initiateShutdown('SIGTERM', 0));
-
-if (!shuttingDown) {
-    console.log(`[Receiver] PID: ${process.pid} --- data_receiver_server.js script initialized. (Minimal JSON Mode, Heartbeats @ ${ANDROID_CLIENT_HEARTBEAT_INTERVAL_MS/1000}s)`);
-}
+// --- Start all connections ---
+console.log(`[Listener] Starting with uWebSockets.js... PID: ${process.pid}`);
+connectToInternalReceiver();
+connectToBinance();
