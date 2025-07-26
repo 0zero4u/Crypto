@@ -1,3 +1,6 @@
+sudo apt-get update && \
+sudo apt-get install -y libboost-all-dev libssl-dev && \
+cat <<'EOF' > ~/CryptoLive/CMakeLists.txt
 cmake_minimum_required(VERSION 3.16)
 project(CryptoFeed CXX)
 
@@ -34,3 +37,11 @@ target_link_libraries(binance_listener_low_latency
 )
 
 target_include_directories(binance_listener_low_latency PRIVATE ${Boost_INCLUDE_DIRS})
+EOF
+
+cd ~/CryptoLive && \
+rm -rf build && \
+mkdir build && \
+cd build && \
+cmake .. && \
+make
