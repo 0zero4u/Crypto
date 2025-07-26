@@ -1,115 +1,114 @@
 const uWS = require('uWebSockets.js');
-const { TextDecoder } = require('util'); // Built-in Node.js module
+
+// --- Server Configuration ---
+const PUBLIC_PORT = 8081;
+const INTERNAL_LISTENER_PORT = 8082;
+// uWS's built-in idle timeout is more efficient than manual ping/pong.
+// A client will be disconnected if no data is sent or received for this duration.
+const ANDROID_CLIENT_IDLE_TIMEOUT_S = 130; // 130 seconds (a bit more than the 120s heartbeat)
+const SHUTDOWN_TIMEOUT_MS = 5000;
 
 // --- Global Error Handlers ---
 process.on('uncaughtException', (err, origin) => {
-    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNCAUGHT EXCEPTION`);
-    console.error(err.stack || err);
+    console.error(`[Receiver] PID: ${process.pid} --- FATAL: UNCAUGHT EXCEPTION`, err.stack || err);
     process.exit(1);
 });
 process.on('unhandledRejection', (reason, promise) => {
-    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNHANDLED PROMISE REJECTION`);
-    console.error('[Listener] Unhandled Rejection at:', promise);
-    console.error('[Listener] Reason:', reason instanceof Error ? reason.stack : reason);
+    console.error(`[Receiver] PID: ${process.pid} --- FATAL: UNHANDLED PROMISE REJECTION`, reason);
     process.exit(1);
 });
 
-// --- Listener Configuration ---
-const SYMBOL = 'btcusdt';
-const RECONNECT_INTERVAL_MS = 5000;
-const MINIMUM_TICK_SIZE = 0.2;
-const decoder = new TextDecoder('utf-8');
+// --- Manually manage the list of connected clients, like the original script ---
+const publicClients = new Set();
+console.log(`[Receiver] PID: ${process.pid} --- Initializing uWebSockets.js server...`);
 
-// --- Connection URLs ---
-const internalReceiverHost = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
-const BINANCE_FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@trade`;
+let listenSocketPublic, listenSocketInternal;
 
-// --- Listener State Variables ---
-let internalWs = null;
-let last_sent_trade_price = null;
-const app = uWS.App({});
-
-// --- PERFORMANCE OPTIMIZATION: Reusable object to avoid GC overhead ---
-const reusablePayload = { type: 'S', p: 0 };
-
-// --- Data Forwarding ---
-function sendToInternalClient(payload) {
-    if (internalWs && internalWs.getBufferedAmount() === 0) {
-        try {
-            internalWs.send(JSON.stringify(payload));
-        } catch (e) {
-            console.error(`[Internal] Failed to send message: ${e.message}`);
-        }
+// --- Broadcast function, similar to the original script's logic ---
+function broadcastToPublicClients(message, isBinary) {
+    if (publicClients.size > 0) {
+        publicClients.forEach(client => {
+            // Check backpressure before sending to avoid overwhelming a client
+            if (client.getBufferedAmount() === 0) {
+                client.send(message, isBinary);
+            }
+        });
     }
 }
 
-// --- Internal Receiver Connection ---
-function connectToInternalReceiver() {
-    console.log(`[Internal] Attempting to connect to ${internalReceiverHost}...`);
-    app.ws(internalReceiverHost, {
+const app = uWS.App({})
+    // --- Internal Server (for binance_listener.js) ---
+    .ws('/internal', {
+        idleTimeout: 0, // No timeout for the trusted internal listener
         open: (ws) => {
-            console.log('[Internal] Connection established.');
-            internalWs = ws;
-        },
-        message: (ws, message, isBinary) => { /* Not expecting messages */ },
-        close: (ws, code, message) => {
-            console.error(`[Internal] Connection closed. Code: ${code}. Reconnecting in ${RECONNECT_INTERVAL_MS}ms...`);
-            internalWs = null;
-            setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
-        },
-        error: (ws, err) => {
-            console.error(`[Internal] Connection error: ${err}. Will attempt to reconnect on close.`);
-        }
-    });
-}
-
-// --- Binance Futures Connection ---
-function connectToBinance() {
-    console.log(`[Binance] Attempting to connect to ${BINANCE_FUTURES_STREAM_URL}...`);
-    app.ws(BINANCE_FUTURES_STREAM_URL, {
-        idleTimeout: 65, // Handles Binance's ping interval
-        
-        open: (ws) => {
-            console.log(`[Binance] Connection established. Subscribed to stream: ${SYMBOL}@trade`);
-            last_sent_trade_price = null;
+            const listenerIp = Buffer.from(ws.getRemoteAddressAsText()).toString();
+            console.log(`[Receiver] binance_listener.js connected internally from ${listenerIp}`);
         },
         message: (ws, message, isBinary) => {
-            try {
-                const trade = JSON.parse(decoder.decode(message));
-
-                if (trade.e === 'trade' && trade.p) {
-                    const current_trade_price = parseFloat(trade.p);
-
-                    if (isNaN(current_trade_price)) return;
-
-                    if (last_sent_trade_price === null) {
-                        last_sent_trade_price = current_trade_price;
-                        return;
-                    }
-
-                    const price_difference = current_trade_price - last_sent_trade_price;
-
-                    if (Math.abs(price_difference) >= MINIMUM_TICK_SIZE) {
-                        reusablePayload.p = current_trade_price;
-                        sendToInternalClient(reusablePayload);
-                        last_sent_trade_price = current_trade_price;
-                    }
-                }
-            } catch (e) {
-                console.error(`[Binance] Error processing message: ${e.message}`);
-            }
+            // A message from the listener triggers a broadcast to all public clients
+            broadcastToPublicClients(message, isBinary);
         },
         close: (ws, code, message) => {
-            console.error(`[Binance] Connection closed. Code: ${code}. Reconnecting in ${RECONNECT_INTERVAL_MS}ms...`);
-            setTimeout(connectToBinance, RECONNECT_INTERVAL_MS);
+            const listenerIp = Buffer.from(ws.getRemoteAddressAsText()).toString();
+            console.log(`[Receiver] binance_listener.js disconnected internally from ${listenerIp}. Code: ${code}`);
+        }
+    })
+    // --- Public Server (for Android Clients) ---
+    .ws('/public', {
+        idleTimeout: ANDROID_CLIENT_IDLE_TIMEOUT_S,
+        open: (ws) => {
+            const clientIp = Buffer.from(ws.getRemoteAddressAsText()).toString();
+            console.log(`[Receiver] Android client connected from IP: ${clientIp}. Total clients: ${publicClients.size + 1}`);
+            // Add the new client to our manually managed list
+            publicClients.add(ws);
         },
-        error: (ws, err) => {
-            console.error(`[Binance] Connection error: ${err}. Will attempt to reconnect on close.`);
+        message: (ws, message, isBinary) => {
+            // Android clients are not expected to send messages
+        },
+        close: (ws, code, message) => {
+            const clientIp = Buffer.from(ws.getRemoteAddressAsText()).toString();
+            // Remove the disconnected client from our list
+            publicClients.delete(ws);
+            console.log(`[Receiver] Android client disconnected from IP: ${clientIp}. Code: ${code}. Total clients: ${publicClients.size}`);
+        }
+    })
+    .listen('0.0.0.0', INTERNAL_LISTENER_PORT, (token) => {
+        listenSocketInternal = token;
+        if (token) {
+            console.log(`[Receiver] Internal server listening for listener on port ${INTERNAL_LISTENER_PORT}`);
+        } else {
+            console.error(`[Receiver] FATAL: Failed to listen on internal port ${INTERNAL_LISTENER_PORT}`);
+            process.exit(1);
+        }
+    })
+    .listen('0.0.0.0', PUBLIC_PORT, (token) => {
+        listenSocketPublic = token;
+        if (token) {
+            console.log(`[Receiver] Public server for Android clients listening on port ${PUBLIC_PORT}`);
+        } else {
+            console.error(`[Receiver] FATAL: Failed to listen on public port ${PUBLIC_PORT}`);
+            process.exit(1);
         }
     });
+
+// --- Graceful Shutdown ---
+function initiateShutdown(signal) {
+    console.log(`\n[Receiver] PID: ${process.pid} --- ${signal} received. Shutting down.`);
+
+    if (listenSocketPublic) {
+        uWS.us_listen_socket_close(listenSocketPublic);
+        listenSocketPublic = null;
+    }
+    if (listenSocketInternal) {
+        uWS.us_listen_socket_close(listenSocketInternal);
+        listenSocketInternal = null;
+    }
+
+    setTimeout(() => {
+        console.log('[Receiver] Exiting.');
+        process.exit(0);
+    }, 1000).unref(); // Allow 1 second for sockets to close
 }
 
-// --- Start all connections ---
-console.log(`[Listener] Starting with uWebSockets.js... PID: ${process.pid}`);
-connectToInternalReceiver();
-connectToBinance();
+process.on('SIGINT', () => initiateShutdown('SIGINT'));
+process.on('SIGTERM', () => initiateShutdown('SIGTERM'));
