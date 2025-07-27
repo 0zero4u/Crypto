@@ -4,24 +4,25 @@ const uWS = require('uWebSockets.js');
 const PUBLIC_PORT = 8081;
 const INTERNAL_LISTENER_PORT = 8082;
 const IDLE_TIMEOUT_SECONDS = 130;
-const SEMI_AUTO_SEND_DELAY_MS = 1000; // Configurable delay for the semi-auto response.
+const SEMI_AUTO_SEND_DELAY_MS = 1000;
+const MAX_DATA_STALENESS_MS = 60000;
 
 let listenSocketPublic, listenSocketInternal;
+let internalListenerSocket = null; // **NEW**: Keep a reference to the listener's socket.
 
-// This Set will hold all connected Android clients to manually iterate over for broadcasting.
 const androidClients = new Set();
 
-// This object will store the last message and its format (binary/text)
-// received from the internal listener.
 let lastBroadcastData = {
     message: null,
-    isBinary: false
+    isBinary: false,
+    timestamp: 0
 };
 
 
 uWS.App({})
     // --- Public WebSocket Server (for Android Clients) ---
     .ws('/public', {
+        // (No changes to open, compression, maxPayloadLength, idleTimeout)
         compression: uWS.SHARED_COMPRESSOR,
         maxPayloadLength: 16 * 1024,
         idleTimeout: IDLE_TIMEOUT_SECONDS,
@@ -37,20 +38,34 @@ uWS.App({})
                 const clientCommand = JSON.parse(messageString);
 
                 if (clientCommand.event === 'set_mode' && clientCommand.mode === 'semi_auto') {
-                    console.log(`[Receiver] Client requested 'semi_auto' mode. Scheduling price send in ${SEMI_AUTO_SEND_DELAY_MS}ms.`);
-                    
-                    setTimeout(() => {
-                        if (lastBroadcastData.message) {
+                    const isDataAvailable = lastBroadcastData.message !== null;
+                    const isDataFresh = isDataAvailable && (Date.now() - lastBroadcastData.timestamp < MAX_DATA_STALENESS_MS);
+
+                    if (isDataFresh) {
+                        // Data is fresh, send it after the normal delay.
+                        console.log(`[Receiver] Data is fresh. Scheduling price send in ${SEMI_AUTO_SEND_DELAY_MS}ms.`);
+                        setTimeout(() => {
                             try {
-                                console.log(`[Receiver] Sending delayed price to client.`);
                                 ws.send(lastBroadcastData.message, lastBroadcastData.isBinary);
                             } catch (e) {
                                 console.error(`[Receiver] FAILED to send delayed price. Client likely disconnected: ${e.message}`);
                             }
+                        }, SEMI_AUTO_SEND_DELAY_MS);
+                    } else {
+                        // **MODIFIED**: Data is stale or unavailable, so command a refresh.
+                        if (internalListenerSocket) {
+                            console.log(`[Receiver] Data is stale or unavailable. Requesting fresh price from listener.`);
+                            try {
+                                internalListenerSocket.send(JSON.stringify({ action: 'get_fresh_price' }));
+                                // We don't send anything to the client here. The price will arrive
+                                // via the regular broadcast once the listener provides it.
+                            } catch (e) {
+                                console.error(`[Receiver] Failed to send refresh command to listener: ${e.message}`);
+                            }
                         } else {
-                            console.log(`[Receiver] Delayed send triggered, but no price data is available to send.`);
+                            console.log('[Receiver] Cannot refresh stale data: Internal listener is not connected.');
                         }
-                    }, SEMI_AUTO_SEND_DELAY_MS);
+                    }
                 }
             } catch (e) {
                 // Ignore non-command messages.
@@ -63,17 +78,31 @@ uWS.App({})
     })
     // --- Internal WebSocket Server (for binance_listener.js) ---
     .ws('/internal', {
+        // (No changes to compression, maxPayloadLength, idleTimeout)
         compression: uWS.DISABLED,
         maxPayloadLength: 4 * 1024,
         idleTimeout: 30,
-
+        
         open: (ws) => {
             console.log('[Receiver] Internal listener connected.');
+            internalListenerSocket = ws; // **NEW**: Store the socket reference.
         },
         message: (ws, message, isBinary) => {
-            lastBroadcastData.message = message;
-            lastBroadcastData.isBinary = isBinary;
+            try {
+                const dataString = Buffer.from(message).toString();
+                const parsedData = JSON.parse(dataString);
+                
+                if(parsedData.timestamp) {
+                    lastBroadcastData.message = message;
+                    lastBroadcastData.isBinary = isBinary;
+                    lastBroadcastData.timestamp = parsedData.timestamp;
+                }
+            } catch (e) {
+                console.error(`[Receiver] Error parsing message from internal listener: ${e.message}`);
+                return;
+            }
 
+            // Broadcast to all clients
             if (androidClients.size > 0) {
                 androidClients.forEach(client => {
                     try {
@@ -85,9 +114,15 @@ uWS.App({})
             }
         },
         close: (ws, code, message) => {
-            console.log('[Receiver] Internal listener disconnected.');
+            console.log('[Receiver] Internal listener disconnected. Clearing last known price and socket.');
+            lastBroadcastData.message = null;
+            lastBroadcastData.isBinary = false;
+            lastBroadcastData.timestamp = 0;
+            internalListenerSocket = null; // **NEW**: Clear the socket reference.
         }
     })
+    // --- listen and shutdown sections ---
+    // (No changes to this section)
     .listen(PUBLIC_PORT, (token) => {
         listenSocketPublic = token;
         if (token) {
@@ -107,7 +142,6 @@ uWS.App({})
         }
     });
 
-// --- Graceful Shutdown ---
 function shutdown() {
     console.log('[Receiver] Shutting down...');
     if (listenSocketPublic) {
