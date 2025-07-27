@@ -3,21 +3,14 @@ const uWS = require('uWebSockets.js');
 
 const PUBLIC_PORT = 8081;
 const INTERNAL_LISTENER_PORT = 8082;
-const IDLE_TIMEOUT_SECONDS = 130;
-const SEMI_AUTO_SEND_DELAY_MS = 1000; // Configurable delay for the semi-auto response.
+const IDLE_TIMEOUT_SECONDS = 130; // Connection is closed if idle for this duration.
 
 let listenSocketPublic, listenSocketInternal;
 
 // This Set will hold all connected Android clients to manually iterate over for broadcasting.
 const androidClients = new Set();
-
-// This object will store the last message and its format (binary/text)
-// received from the internal listener.
-let lastBroadcastData = {
-    message: null,
-    isBinary: false
-};
-
+// Store the last received payload from the internal listener to send on demand.
+let lastKnownPricePayload = { message: null, isBinary: false };
 
 uWS.App({})
     // --- Public WebSocket Server (for Android Clients) ---
@@ -29,35 +22,35 @@ uWS.App({})
         open: (ws) => {
             const clientIp = Buffer.from(ws.getRemoteAddressAsText()).toString();
             console.log(`[Receiver] Public client connected from ${clientIp}. Adding to broadcast set.`);
+            
+            // Add the newly connected client to our manual collection.
             androidClients.add(ws);
         },
         message: (ws, message, isBinary) => {
+            // Android clients can now send a message to request the last price.
             try {
-                const messageString = Buffer.from(message).toString();
-                const clientCommand = JSON.parse(messageString);
+                const decodedMessage = Buffer.from(message).toString();
+                const data = JSON.parse(decodedMessage);
 
-                if (clientCommand.event === 'set_mode' && clientCommand.mode === 'semi_auto') {
-                    console.log(`[Receiver] Client requested 'semi_auto' mode. Scheduling price send in ${SEMI_AUTO_SEND_DELAY_MS}ms.`);
+                if (data.event === 'set_mode' && data.mode === 'semi_auto') {
+                    console.log('[Receiver] Received "set_mode: semi_auto" request from a client.');
                     
-                    setTimeout(() => {
-                        if (lastBroadcastData.message) {
-                            try {
-                                console.log(`[Receiver] Sending delayed price to client.`);
-                                ws.send(lastBroadcastData.message, lastBroadcastData.isBinary);
-                            } catch (e) {
-                                console.error(`[Receiver] FAILED to send delayed price. Client likely disconnected: ${e.message}`);
-                            }
-                        } else {
-                            console.log(`[Receiver] Delayed send triggered, but no price data is available to send.`);
-                        }
-                    }, SEMI_AUTO_SEND_DELAY_MS);
+                    // If we have a last known price, send it immediately to THIS client.
+                    if (lastKnownPricePayload.message) {
+                        console.log(`[Receiver] Sending last known price to the requesting client.`);
+                        ws.send(lastKnownPricePayload.message, lastKnownPricePayload.isBinary);
+                    } else {
+                        console.log('[Receiver] No last known price available to send for semi_auto mode.');
+                    }
                 }
             } catch (e) {
-                // Ignore non-command messages.
+                // Silently ignore messages that are not in the expected JSON format.
             }
         },
         close: (ws, code, message) => {
             console.log(`[Receiver] Public client disconnected. Removing from broadcast set.`);
+
+            // IMPORTANT: Remove the client from the collection on disconnect to prevent memory leaks.
             androidClients.delete(ws);
         }
     })
@@ -71,9 +64,12 @@ uWS.App({})
             console.log('[Receiver] Internal listener connected.');
         },
         message: (ws, message, isBinary) => {
-            lastBroadcastData.message = message;
-            lastBroadcastData.isBinary = isBinary;
-
+            // Store the latest message before broadcasting.
+            // We store the raw message (which is an ArrayBuffer) to avoid re-processing.
+            lastKnownPricePayload.message = message;
+            lastKnownPricePayload.isBinary = isBinary;
+            
+            // Manual broadcast loop.
             if (androidClients.size > 0) {
                 androidClients.forEach(client => {
                     try {
