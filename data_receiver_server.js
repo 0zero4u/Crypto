@@ -1,16 +1,18 @@
-// data_receiver_server.js (uWebSockets.js version with Manual Broadcasting)
+// data_receiver_server.js
 const uWS = require('uWebSockets.js');
+const axios = require('axios');
 
 const PUBLIC_PORT = 8081;
 const INTERNAL_LISTENER_PORT = 8082;
 const IDLE_TIMEOUT_SECONDS = 130; // Connection is closed if idle for this duration.
 
+// Binance API URL for an instant price quote
+const BINANCE_TICKER_URL = 'https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT';
+
 let listenSocketPublic, listenSocketInternal;
 
 // This Set will hold all connected Android clients to manually iterate over for broadcasting.
 const androidClients = new Set();
-// Store the last received payload from the internal listener to send on demand.
-let lastKnownPricePayload = { message: null, isBinary: false };
 
 uWS.App({})
     // --- Public WebSocket Server (for Android Clients) ---
@@ -26,31 +28,47 @@ uWS.App({})
             // Add the newly connected client to our manual collection.
             androidClients.add(ws);
         },
-        message: (ws, message, isBinary) => {
-            // Android clients can now send a message to request the last price.
+        message: async (ws, message, isBinary) => {
+            // --- NEW: Handle client-side requests for on-demand data ---
             try {
-                const decodedMessage = Buffer.from(message).toString();
-                const data = JSON.parse(decodedMessage);
+                const request = JSON.parse(Buffer.from(message).toString());
 
-                if (data.event === 'set_mode' && data.mode === 'semi_auto') {
-                    console.log('[Receiver] Received "set_mode: semi_auto" request from a client.');
-                    
-                    // If we have a last known price, send it immediately to THIS client.
-                    if (lastKnownPricePayload.message) {
-                        console.log(`[Receiver] Sending last known price to the requesting client.`);
-                        ws.send(lastKnownPricePayload.message, lastKnownPricePayload.isBinary);
-                    } else {
-                        console.log('[Receiver] No last known price available to send for semi_auto mode.');
+                // Check for the specific "semi_auto" mode request from an Android client
+                if (request.event === 'set_mode' && request.mode === 'semi_auto') {
+                    console.log('[Receiver] Received semi_auto request. Fetching instant price for client.');
+
+                    // Fetch the latest price from Binance REST API to avoid any delays in the main pipeline.
+                    const response = await axios.get(BINANCE_TICKER_URL);
+                    const lastPrice = parseFloat(response.data.lastPrice);
+
+                    if (!isNaN(lastPrice)) {
+                        // Format the payload exactly like the binance_listener does
+                        const payload = {
+                            type: 'S',
+                            p: lastPrice
+                        };
+                        
+                        // Send the price immediately to ONLY the requesting client.
+                        // A try-catch is a safeguard against a socket that may have closed mid-request.
+                        try {
+                           ws.send(JSON.stringify(payload), isBinary);
+                           console.log(`[Receiver] Sent instant price ${lastPrice} to semi_auto client.`);
+                        } catch (e) {
+                           console.error(`[Receiver] Error sending instant price to client: ${e.message}`);
+                        }
                     }
                 }
             } catch (e) {
-                // Silently ignore messages that are not in the expected JSON format.
+                // This block catches errors from JSON.parse or axios.get.
+                // We assume most messages are not JSON or not intended for this logic,
+                // so we don't log an error unless debugging is needed.
+                // console.log(`[Receiver] Non-JSON or irrelevant message received from client.`);
             }
         },
         close: (ws, code, message) => {
             console.log(`[Receiver] Public client disconnected. Removing from broadcast set.`);
 
-            // IMPORTANT: Remove the client from the collection on disconnect to prevent memory leaks.
+            // IMPORTANT: Remove the client from the collection on disconnect.
             androidClients.delete(ws);
         }
     })
@@ -64,18 +82,13 @@ uWS.App({})
             console.log('[Receiver] Internal listener connected.');
         },
         message: (ws, message, isBinary) => {
-            // Store the latest message before broadcasting.
-            // We store the raw message (which is an ArrayBuffer) to avoid re-processing.
-            lastKnownPricePayload.message = message;
-            lastKnownPricePayload.isBinary = isBinary;
-            
-            // Manual broadcast loop.
+            // Manual broadcast loop: This iterates over every client and sends the live stream data.
             if (androidClients.size > 0) {
                 androidClients.forEach(client => {
                     try {
                         client.send(message, isBinary);
                     } catch (e) {
-                        console.error(`[Receiver] Error sending to a client: ${e.message}`);
+                        console.error(`[Receiver] Error broadcasting to a client: ${e.message}`);
                     }
                 });
             }
@@ -118,4 +131,4 @@ function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-console.log(`[Receiver] PID: ${process.pid} --- Server initialized in manual broadcast mode.`);
+console.log(`[Receiver] PID: ${process.pid} --- Server initialized.`);
