@@ -8,8 +8,15 @@ const IDLE_TIMEOUT_SECONDS = 130; // Connection is closed if idle for this durat
 let listenSocketPublic, listenSocketInternal;
 
 // This Set will hold all connected Android clients to manually iterate over for broadcasting.
-// This replicates the behavior of the original `ws` server's `wss.clients`.
 const androidClients = new Set();
+
+// **NEW**: This object will store the last message and its format (binary/text)
+// received from the internal listener, so we can send it on demand.
+let lastBroadcastData = {
+    message: null,
+    isBinary: false
+};
+
 
 uWS.App({})
     // --- Public WebSocket Server (for Android Clients) ---
@@ -26,12 +33,38 @@ uWS.App({})
             androidClients.add(ws);
         },
         message: (ws, message, isBinary) => {
-            // Android clients are not expected to send messages.
+            // **MODIFIED**: Handle specific messages from Android clients.
+            try {
+                // uWebSockets.js message is an ArrayBuffer. Convert to string for parsing.
+                const messageString = Buffer.from(message).toString();
+                const clientCommand = JSON.parse(messageString);
+
+                // Check for the special "semi_auto" mode request.
+                if (clientCommand.event === 'set_mode' && clientCommand.mode === 'semi_auto') {
+                    console.log(`[Receiver] Client requested 'semi_auto' mode.`);
+                    
+                    // If we have a last known price, send it immediately to THIS client.
+                    if (lastBroadcastData.message) {
+                        try {
+                            console.log(`[Receiver] Sending last known price to the requesting client.`);
+                            ws.send(lastBroadcastData.message, lastBroadcastData.isBinary);
+                        } catch (e) {
+                            console.error(`[Receiver] FAILED to send immediate price to client: ${e.message}`);
+                        }
+                    } else {
+                        console.log(`[Receiver] Client requested last price, but no price has been received yet.`);
+                    }
+                }
+            } catch (e) {
+                // This will catch non-JSON messages or parsing errors.
+                // We can ignore them as they are not valid commands.
+                // console.log(`[Receiver] Received non-command message from public client.`);
+            }
         },
         close: (ws, code, message) => {
             console.log(`[Receiver] Public client disconnected. Removing from broadcast set.`);
 
-            // IMPORTANT: Remove the client from the collection on disconnect to prevent memory leaks.
+            // IMPORTANT: Remove the client from the collection on disconnect.
             androidClients.delete(ws);
         }
     })
@@ -45,13 +78,13 @@ uWS.App({})
             console.log('[Receiver] Internal listener connected.');
         },
         message: (ws, message, isBinary) => {
-            // Manual broadcast loop, as requested.
-            // This iterates over every client in our Set and sends the message.
+            // **MODIFIED**: Store the latest message before broadcasting it.
+            lastBroadcastData.message = message;
+            lastBroadcastData.isBinary = isBinary;
+
+            // Manual broadcast loop to all connected Android clients.
             if (androidClients.size > 0) {
                 androidClients.forEach(client => {
-                    // uWebSockets.js's .send() handles backpressure by returning true/false.
-                    // For this simple forwarding case, we can send directly.
-                    // A try-catch is a safeguard against potential errors on a closing socket.
                     try {
                         client.send(message, isBinary);
                     } catch (e) {
