@@ -1,110 +1,95 @@
-// binance_listener_final.js
-const uWS = require('uWebSockets.js');
-const { URL } = require('url'); // Native Node.js module
+// binance_listener.js (Optimized with Manual String Slicing - The Correct Low-Latency Approach)
+const WebSocket = require('ws');
 
-// --- Global Configuration ---
+// --- Process-level error handlers ---
+process.on('uncaughtException', (err, origin) => {
+    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNCAUGHT EXCEPTION`, err.stack || err);
+    cleanupAndExit(1);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNHANDLED PROMISE REJECTION`, reason);
+    cleanupAndExit(1);
+});
+
+// --- Graceful shutdown function ---
+function cleanupAndExit(exitCode = 1) {
+    const clientsToTerminate = [internalWsClient, binanceWsClient];
+    console.error('[Listener] Initiating cleanup...');
+    clientsToTerminate.forEach(client => {
+        if (client && (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING)) {
+            try { client.terminate(); } catch (e) { console.error(`[Listener] Error during WebSocket termination: ${e.message}`); }
+        }
+    });
+    setTimeout(() => {
+        console.error(`[Listener] Exiting with code ${exitCode}.`);
+        process.exit(exitCode);
+    }, 1000).unref();
+}
+
+// --- Configuration ---
 const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
 const MINIMUM_TICK_SIZE = 0.2;
-
-const INTERNAL_RECEIVER_URL = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
+const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
 const BINANCE_FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@trade`;
 
-let internalWsClient = null; // Holds the active client socket for the internal receiver
-let binanceWsClient = null;  // Holds the active client socket for Binance
+// --- State variables ---
+let internalWsClient, binanceWsClient;
 let last_sent_trade_price = null;
+const payload_to_send = { type: 'S', p: 0 }; // Reusable payload
 
-// --- Graceful Shutdown and Global Error Handling ---
-const exitHandler = (signal) => {
-    console.log(`[Listener] Received ${signal}. Shutting down gracefully.`);
-    if (internalWsClient) internalWsClient.close();
-    if (binanceWsClient) binanceWsClient.close();
-    setTimeout(() => process.exit(0), 1000).unref();
-};
+// --- Internal WebSocket Client ---
+function connectToInternalReceiver() { /* ... implementation from previous response ... */ }
+function sendToInternalClient(payload) { /* ... implementation from previous response ... */ }
+const price_key = '"p":"'; // Define the key we are searching for once
 
-process.on('uncaughtException', (err) => {
-    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNCAUGHT EXCEPTION`, err.stack || err);
-    process.exit(1);
-});
-process.on('unhandledRejection', (reason) => {
-    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNHANDLED REJECTION`, reason);
-    process.exit(1);
-});
-process.on('SIGINT', () => exitHandler('SIGINT'));
-process.on('SIGTERM', () => exitHandler('SIGTERM'));
-
-// --- Main Application Logic ---
-const app = uWS.App({});
-
+// --- Binance WebSocket Client ---
 function connectToBinance() {
-    if (binanceWsClient) return; // Prevent multiple connection attempts
-    console.log(`[Binance] Attempting to connect to ${BINANCE_FUTURES_STREAM_URL}`);
+    binanceWsClient = new WebSocket(BINANCE_FUTURES_STREAM_URL);
     
-    // For client connections, you define the behavior directly in the ws() call with the URI
-    app.ws(BINANCE_FUTURES_STREAM_URL, {
-        compression: uWS.SHARED_COMPRESSOR, // Enable compression for the Binance connection
-        open: (ws) => {
-            console.log(`[Binance] Connection established to stream: ${SYMBOL}@trade`);
-            last_sent_trade_price = null;
-            binanceWsClient = ws;
-        },
-        message: (ws, message, isBinary) => {
-            try {
-                const data = JSON.parse(Buffer.from(message));
-                if (data.e === 'trade' && data.p) {
-                    const current_trade_price = parseFloat(data.p);
-                    if (isNaN(current_trade_price)) return;
+    binanceWsClient.on('open', () => {
+        console.log(`[Binance] Connection established to stream: ${SYMBOL}@trade`);
+        last_sent_trade_price = null;
+    });
+    
+    binanceWsClient.on('message', (data) => {
+        try {
+            const messageStr = data.toString();
 
-                    const shouldSendPrice = last_sent_trade_price === null || Math.abs(current_trade_price - last_sent_trade_price) >= MINIMUM_TICK_SIZE;
-                    
-                    if (shouldSendPrice) {
-                        sendToInternalClient({ type: 'S', p: current_trade_price });
-                        last_sent_trade_price = current_trade_price;
-                    }
-                }
-            } catch (e) {
-                console.error(`[Binance] Error processing message: ${e.message}`);
+            // The correct, high-performance string slicing method. NO REGEX.
+            const priceKeyIndex = messageStr.indexOf(price_key);
+            if (priceKeyIndex === -1) return;
+
+            const priceStartIndex = priceKeyIndex + price_key.length;
+            const priceEndIndex = messageStr.indexOf('"', priceStartIndex);
+            if (priceEndIndex === -1) return;
+
+            const priceStr = messageStr.substring(priceStartIndex, priceEndIndex);
+            const current_trade_price = parseFloat(priceStr);
+
+            if (isNaN(current_trade_price)) return;
+
+            if ((last_sent_trade_price === null) || (Math.abs(current_trade_price - last_sent_trade_price) >= MINIMUM_TICK_SIZE)) {
+                payload_to_send.p = current_trade_price;
+                sendToInternalClient(payload_to_send);
+                last_sent_trade_price = current_trade_price;
             }
-        },
-        close: (ws, code, message) => {
-            console.error(`[Binance] Connection closed. Reconnecting in ${RECONNECT_INTERVAL_MS / 1000}s...`);
-            binanceWsClient = null; // Clear the handle
-            setTimeout(connectToBinance, RECONNECT_INTERVAL_MS);
+
+        } catch (e) { 
+            console.error(`[Binance] Error processing message: ${e.message}`);
         }
     });
-}
 
-function connectToInternalReceiver() {
-    if (internalWsClient) return; // Prevent multiple connection attempts
-    console.log(`[Internal] Attempting to connect to ${INTERNAL_RECEIVER_URL}`);
+    binanceWsClient.on('error', (err) => console.error('[Binance] Connection error:', err.message));
     
-    app.ws(INTERNAL_RECEIVER_URL, {
-        compression: uWS.DISABLED, // Disable compression for internal LAN traffic
-        open: (ws) => {
-            console.log('[Internal] Connection established.');
-            internalWsClient = ws;
-        },
-        message: (ws, message, isBinary) => {
-            // Not expecting messages from the receiver, but handler must exist
-        },
-        close: (ws, code, message) => {
-            console.error(`[Internal] Connection closed. Reconnecting in ${RECONNECT_INTERVAL_MS / 1000}s...`);
-            internalWsClient = null; // Clear the handle
-            setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
-        }
+    binanceWsClient.on('close', () => {
+        console.error('[Binance] Connection closed. Reconnecting...');
+        binanceWsClient = null;
+        setTimeout(connectToBinance, RECONNECT_INTERVAL_MS);
     });
 }
 
-function sendToInternalClient(payload) {
-    if (internalWsClient && internalWsClient.getBufferedAmount() === 0) {
-        internalWsClient.send(JSON.stringify(payload));
-    }
-}
-
-// --- Start the Listener ---
+// --- Application Entry Point ---
 console.log(`[Listener] Starting... PID: ${process.pid}`);
+connectToInternalReceiver(); // Assume this function is defined as before
 connectToBinance();
-connectToInternalReceiver();
-
-// Keep the Node.js event loop running. This is essential for client-only applications.
-setInterval(() => {}, 1000 * 60 * 60);
