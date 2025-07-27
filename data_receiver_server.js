@@ -1,6 +1,6 @@
 // data_receiver_server.js
 const uWS = require('uWebSockets.js');
-const axios = require('axios'); // This dependency is now correctly managed by package.json
+const axios = require('axios');
 
 const PUBLIC_PORT = 8081;
 const INTERNAL_LISTENER_PORT = 8082;
@@ -13,6 +13,7 @@ let listenSocketPublic, listenSocketInternal;
 const androidClients = new Set();
 
 uWS.App({})
+    // --- Public WebSocket Server (for Android Clients) ---
     .ws('/public', {
         compression: uWS.SHARED_COMPRESSOR,
         maxPayloadLength: 16 * 1024,
@@ -27,18 +28,29 @@ uWS.App({})
             try {
                 const request = JSON.parse(Buffer.from(message).toString());
 
+                // Check for the "semi_auto" mode request
                 if (request.event === 'set_mode' && request.mode === 'semi_auto') {
-                    console.log('[Receiver] Received semi_auto request. Fetching instant price for client.');
+                    console.log('[Receiver] Received semi_auto request. Fetching instant price for ALL clients.');
+                    
                     const response = await axios.get(BINANCE_TICKER_URL);
                     const lastPrice = parseFloat(response.data.lastPrice);
 
                     if (!isNaN(lastPrice)) {
                         const payload = { type: 'S', p: lastPrice };
-                        try {
-                           ws.send(JSON.stringify(payload), isBinary);
-                           console.log(`[Receiver] Sent instant price ${lastPrice} to semi_auto client.`);
-                        } catch (e) {
-                           console.error(`[Receiver] Error sending instant price to client: ${e.message}`);
+                        const messageToSend = JSON.stringify(payload);
+
+                        // --- MODIFIED LOGIC ---
+                        // Instead of sending to one client, we now broadcast the FAPI price to ALL connected clients.
+                        // This ensures every client is synchronized at this moment.
+                        if (androidClients.size > 0) {
+                            console.log(`[Receiver] Broadcasting FAPI price ${lastPrice} to all ${androidClients.size} clients.`);
+                            androidClients.forEach(client => {
+                                try {
+                                    client.send(messageToSend, isBinary);
+                                } catch (e) {
+                                    console.error(`[Receiver] Error broadcasting FAPI price to a client: ${e.message}`);
+                                }
+                            });
                         }
                     }
                 }
@@ -51,6 +63,8 @@ uWS.App({})
             androidClients.delete(ws);
         }
     })
+    // --- Internal WebSocket Server (for binance_listener.js) ---
+    // This part is unchanged and continues to work as before. It broadcasts the LIVE feed.
     .ws('/internal', {
         compression: uWS.DISABLED,
         maxPayloadLength: 4 * 1024,
@@ -60,12 +74,13 @@ uWS.App({})
             console.log('[Receiver] Internal listener connected.');
         },
         message: (ws, message, isBinary) => {
+            // Broadcast the live stream from binance_listener to all clients.
             if (androidClients.size > 0) {
                 androidClients.forEach(client => {
                     try {
                         client.send(message, isBinary);
                     } catch (e) {
-                        console.error(`[Receiver] Error broadcasting to a client: ${e.message}`);
+                        console.error(`[Receiver] Error broadcasting live stream to a client: ${e.message}`);
                     }
                 });
             }
