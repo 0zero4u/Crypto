@@ -1,50 +1,40 @@
 // binance_listener.js
 const WebSocket = require('ws');
 
-// --- Global Error Handlers ---
 process.on('uncaughtException', (err, origin) => {
-    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNCAUGHT EXCEPTION`);
-    console.error(err.stack || err);
+    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNCAUGHT EXCEPTION`, err.stack || err);
     cleanupAndExit(1);
 });
 process.on('unhandledRejection', (reason, promise) => {
-    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNHANDLED PROMISE REJECTION`);
-    console.error('[Listener] Unhandled Rejection at:', promise);
-    console.error('[Listener] Reason:', reason instanceof Error ? reason.stack : reason);
+    console.error(`[Listener] PID: ${process.pid} --- FATAL: UNHANDLED PROMISE REJECTION`, reason);
     cleanupAndExit(1);
 });
 
-// --- State Management ---
 function cleanupAndExit(exitCode = 1) {
     const clientsToTerminate = [internalWsClient, binanceWsClient];
-    
     console.error('[Listener] Initiating cleanup...');
     clientsToTerminate.forEach(client => {
         if (client && (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING)) {
             try { client.terminate(); } catch (e) { console.error(`[Listener] Error during WebSocket termination: ${e.message}`); }
         }
     });
-    
     setTimeout(() => {
         console.error(`[Listener] Exiting with code ${exitCode}.`);
         process.exit(exitCode);
     }, 1000).unref();
 }
 
-// --- Listener Configuration ---
 const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
 const MINIMUM_TICK_SIZE = 0.2;
 
-// --- Connection URLs ---
-const internalReceiverUrl = 'ws://127.0.0.1:8082/internal'; // Using localhost for direct connection
+// Using the correct internal DNS for service-to-service communication in GCP
+const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
 const BINANCE_FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@trade`;
 
-// --- Listener State Variables ---
 let internalWsClient, binanceWsClient;
 let last_sent_trade_price = null;
 
-// --- Internal Receiver Connection ---
 function connectToInternalReceiver() {
     if (internalWsClient && (internalWsClient.readyState === WebSocket.OPEN || internalWsClient.readyState === WebSocket.CONNECTING)) return;
     internalWsClient = new WebSocket(internalReceiverUrl);
@@ -57,7 +47,6 @@ function connectToInternalReceiver() {
     internalWsClient.on('open', () => console.log('[Internal] Connection established.'));
 }
 
-// --- Data Forwarding ---
 function sendToInternalClient(payload) {
     if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
         try {
@@ -66,42 +55,26 @@ function sendToInternalClient(payload) {
     }
 }
 
-// --- Binance Futures Connection ---
 function connectToBinance() {
     binanceWsClient = new WebSocket(BINANCE_FUTURES_STREAM_URL);
     
     binanceWsClient.on('open', () => {
-        console.log(`[Binance] Connection established. Subscribed to stream: ${SYMBOL}@trade`);
-        // Reset last price on new connection to ensure the first new price is sent.
+        console.log(`[Binance] Connection established to stream: ${SYMBOL}@trade`);
         last_sent_trade_price = null;
     });
     
     binanceWsClient.on('message', (data) => {
         try {
             const message = JSON.parse(data.toString());
-
             if (message.e === 'trade' && message.p) {
                 const current_trade_price = parseFloat(message.p);
-                
-                if (isNaN(current_trade_price)) {
-                    return; // Ignore if price is not a number
-                }
+                if (isNaN(current_trade_price)) return;
 
-                // --- MODIFIED LOGIC ---
-                // This condition is now true if:
-                // 1. It's the very first price we've received (`last_sent_trade_price` is null).
-                // 2. The price change since the last sent price is significant enough.
-                const shouldSendPrice = (last_sent_trade_price === null) || 
-                                        (Math.abs(current_trade_price - last_sent_trade_price) >= MINIMUM_TICK_SIZE);
+                const shouldSendPrice = (last_sent_trade_price === null) || (Math.abs(current_trade_price - last_sent_trade_price) >= MINIMUM_TICK_SIZE);
 
                 if (shouldSendPrice) {
-                    const payload = {
-                        type: 'S',
-                        p: current_trade_price
-                    };
+                    const payload = { type: 'S', p: current_trade_price };
                     sendToInternalClient(payload);
-                    
-                    // IMPORTANT: Update the last sent price *only after* sending it.
                     last_sent_trade_price = current_trade_price;
                 }
             }
@@ -119,7 +92,6 @@ function connectToBinance() {
     });
 }
 
-// --- Start all connections ---
 console.log(`[Listener] Starting... PID: ${process.pid}`);
 connectToInternalReceiver();
 connectToBinance();
