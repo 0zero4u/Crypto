@@ -5,7 +5,7 @@ const PUBLIC_PORT = 8081;
 const INTERNAL_LISTENER_PORT = 8082;
 const IDLE_TIMEOUT_SECONDS = 130;
 const SEMI_AUTO_SEND_DELAY_MS = 1000;
-const MAX_DATA_STALENESS_MS = 60000;
+const MAX_DATA_STALENESS_MS = 500;
 
 let listenSocketPublic, listenSocketInternal;
 let internalListenerSocket = null;
