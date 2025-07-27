@@ -5,13 +5,14 @@ const PUBLIC_PORT = 8081;
 const INTERNAL_LISTENER_PORT = 8082;
 const IDLE_TIMEOUT_SECONDS = 130;
 const SEMI_AUTO_SEND_DELAY_MS = 1000;
-const MAX_DATA_STALENESS_MS = 1000;
+const MAX_DATA_STALENESS_MS = 60000;
 
 let listenSocketPublic, listenSocketInternal;
 let internalListenerSocket = null;
 
 const androidClients = new Set();
 
+// This state object holds the last valid price data received.
 let lastBroadcastData = {
     price: null,
     timestamp: 0
@@ -19,37 +20,46 @@ let lastBroadcastData = {
 
 
 uWS.App({})
-    // --- Public WebSocket Server (for Android Clients) --- (No changes in this section)
+    // ===================================================================
+    //  WORKFLOW FOR PUBLIC CLIENTS (Android App)
+    // ===================================================================
     .ws('/public', {
         compression: uWS.SHARED_COMPRESSOR,
         maxPayloadLength: 16 * 1024,
         idleTimeout: IDLE_TIMEOUT_SECONDS,
+
         open: (ws) => {
             const clientIp = Buffer.from(ws.getRemoteAddressAsText()).toString();
             console.log(`[Receiver] Public client connected from ${clientIp}. Adding to broadcast set.`);
             androidClients.add(ws);
         },
+        
+        // This code ONLY runs when a specific Android client sends a message.
         message: (ws, message, isBinary) => {
             try {
                 const messageString = Buffer.from(message).toString();
                 const clientCommand = JSON.parse(messageString);
+
+                // We only care about the 'semi_auto' command.
                 if (clientCommand.event === 'set_mode' && clientCommand.mode === 'semi_auto') {
                     const isDataAvailable = lastBroadcastData.price !== null;
                     const isDataFresh = isDataAvailable && (Date.now() - lastBroadcastData.timestamp < MAX_DATA_STALENESS_MS);
+
                     if (isDataFresh) {
+                        // If data is good, send it to THIS SPECIFIC client after a delay.
+                        // This does NOT affect any other clients.
                         console.log(`[Receiver] Data is fresh. Scheduling price send in ${SEMI_AUTO_SEND_DELAY_MS}ms.`);
                         setTimeout(() => {
                             try {
-                                const clientPayload = JSON.stringify({
-                                    type: 'S',
-                                    p: lastBroadcastData.price
-                                });
+                                const clientPayload = JSON.stringify({ type: 'S', p: lastBroadcastData.price });
                                 ws.send(clientPayload, false);
                             } catch (e) {
                                 console.error(`[Receiver] FAILED to send delayed price. Client likely disconnected: ${e.message}`);
                             }
                         }, SEMI_AUTO_SEND_DELAY_MS);
                     } else {
+                        // If data is stale, ask the listener for a new price. The new price will be
+                        // broadcast to EVERYONE via the '/internal' message handler below.
                         if (internalListenerSocket) {
                             console.log(`[Receiver] Data is stale or unavailable. Requesting fresh price from listener.`);
                             try {
@@ -71,7 +81,9 @@ uWS.App({})
             androidClients.delete(ws);
         }
     })
-    // --- Internal WebSocket Server (for binance_listener.js) ---
+    // ===================================================================
+    //  WORKFLOW FOR INTERNAL LISTENER (binance_listener.js)
+    // ===================================================================
     .ws('/internal', {
         compression: uWS.DISABLED,
         maxPayloadLength: 4 * 1024,
@@ -81,34 +93,35 @@ uWS.App({})
             console.log('[Receiver] Internal listener connected.');
             internalListenerSocket = ws;
         },
+
+        // This code runs for EVERY message from binance_listener (pings and price updates).
+        // This is where the STANDARD BROADCAST happens.
         message: (ws, message, isBinary) => {
             let parsedData;
             try {
                 const dataString = Buffer.from(message).toString();
                 parsedData = JSON.parse(dataString);
                 
-                // **MODIFIED**: Handle ping messages
+                // If it's a heartbeat, ignore it and stop. Its only job was to keep the connection alive.
                 if (parsedData.type === 'ping') {
-                    // This is a heartbeat message. Ignore it and do nothing.
-                    // Its only purpose was to reset the idle timer.
                     return;
                 }
                 
+                // If it's a valid price message, store the data.
                 if(parsedData.timestamp && typeof parsedData.p !== 'undefined') {
                     lastBroadcastData.price = parsedData.p;
                     lastBroadcastData.timestamp = parsedData.timestamp;
                 } else {
-                    return;
+                    return; // Ignore malformed messages.
                 }
             } catch (e) {
                 console.error(`[Receiver] Error parsing message from internal listener: ${e.message}`);
                 return;
             }
 
-            const clientPayload = JSON.stringify({
-                type: 'S',
-                p: parsedData.p
-            });
+            // **CRITICAL**: This part broadcasts the price update to ALL connected clients,
+            // ensuring normal clients get their tick-based updates.
+            const clientPayload = JSON.stringify({ type: 'S', p: parsedData.p });
 
             if (androidClients.size > 0) {
                 androidClients.forEach(client => {
@@ -127,7 +140,6 @@ uWS.App({})
             internalListenerSocket = null;
         }
     })
-    // --- Listen and Shutdown --- (No changes here)
     .listen(PUBLIC_PORT, (token) => {
         listenSocketPublic = token;
         if (token) {
@@ -147,6 +159,7 @@ uWS.App({})
         }
     });
 
+// --- Graceful Shutdown ---
 function shutdown() {
     console.log('[Receiver] Shutting down...');
     if (listenSocketPublic) {
