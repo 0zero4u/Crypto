@@ -1,6 +1,7 @@
 const WebSocket = require('ws');
 
 // --- Global Error Handlers ---
+// (No changes to this section)
 process.on('uncaughtException', (err, origin) => {
     console.error(`[Listener] PID: ${process.pid} --- FATAL: UNCAUGHT EXCEPTION`);
     console.error(err.stack || err);
@@ -14,6 +15,7 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 // --- State Management ---
+// (No changes to this section)
 function cleanupAndExit(exitCode = 1) {
     const clientsToTerminate = [internalWsClient, binanceWsClient];
     
@@ -42,18 +44,47 @@ const BINANCE_FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@trade
 // --- Listener State Variables ---
 let internalWsClient, binanceWsClient;
 let last_sent_trade_price = null;
+let last_received_trade_price = null; // **NEW**: Store the absolute last price received from Binance.
 
 // --- Internal Receiver Connection ---
 function connectToInternalReceiver() {
     if (internalWsClient && (internalWsClient.readyState === WebSocket.OPEN || internalWsClient.readyState === WebSocket.CONNECTING)) return;
+    
     internalWsClient = new WebSocket(internalReceiverUrl);
     internalWsClient.on('error', (err) => console.error(`[Internal] WebSocket error: ${err.message}`));
+    
     internalWsClient.on('close', () => {
         console.error('[Internal] Connection closed. Reconnecting...');
         internalWsClient = null;
         setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
     });
+    
     internalWsClient.on('open', () => console.log('[Internal] Connection established.'));
+
+    // **NEW**: Handle commands from the data_receiver_server
+    internalWsClient.on('message', (data) => {
+        try {
+            const command = JSON.parse(data.toString());
+            if (command.action === 'get_fresh_price') {
+                console.log('[Listener] Received command to send fresh price.');
+                if (last_received_trade_price !== null) {
+                    // Send the last known price immediately, regardless of tick size.
+                    const payload = {
+                        type: 'S',
+                        p: last_received_trade_price,
+                        timestamp: Date.now()
+                    };
+                    sendToInternalClient(payload);
+                    // Update the 'last_sent' price to prevent an immediate duplicate broadcast.
+                    last_sent_trade_price = last_received_trade_price;
+                } else {
+                    console.log('[Listener] Cannot send fresh price, no price has been received from Binance yet.');
+                }
+            }
+        } catch (e) {
+            console.error(`[Listener] Invalid command from internal server: ${e.message}`);
+        }
+    });
 }
 
 // --- Data Forwarding ---
@@ -72,6 +103,7 @@ function connectToBinance() {
     binanceWsClient.on('open', () => {
         console.log(`[Binance] Connection established. Subscribed to stream: ${SYMBOL}@trade`);
         last_sent_trade_price = null;
+        last_received_trade_price = null;
     });
     
     binanceWsClient.on('message', (data) => {
@@ -85,13 +117,16 @@ function connectToBinance() {
                     return;
                 }
 
-                // Send the first price, OR send if the price difference is large enough.
+                // **MODIFIED**: Always update the last_received_trade_price.
+                last_received_trade_price = current_trade_price;
+
                 const shouldSend = last_sent_trade_price === null || Math.abs(current_trade_price - last_sent_trade_price) >= MINIMUM_TICK_SIZE;
 
                 if (shouldSend) {
                     const payload = {
                         type: 'S',
-                        p: current_trade_price
+                        p: current_trade_price,
+                        timestamp: Date.now()
                     };
                     
                     if (last_sent_trade_price === null) {
