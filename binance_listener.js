@@ -85,20 +85,20 @@ function connectToBinance() {
                     return;
                 }
 
-                if (last_sent_trade_price === null) {
-                    last_sent_trade_price = current_trade_price;
-                    return;
-                }
+                // Send the first price, OR send if the price difference is large enough.
+                const shouldSend = last_sent_trade_price === null || Math.abs(current_trade_price - last_sent_trade_price) >= MINIMUM_TICK_SIZE;
 
-                const price_difference = current_trade_price - last_sent_trade_price;
-
-                if (Math.abs(price_difference) >= MINIMUM_TICK_SIZE) {
+                if (shouldSend) {
                     const payload = {
                         type: 'S',
                         p: current_trade_price
                     };
-                    sendToInternalClient(payload);
                     
+                    if (last_sent_trade_price === null) {
+                        console.log(`[Binance] Sending initial price: ${current_trade_price}`);
+                    }
+
+                    sendToInternalClient(payload);
                     last_sent_trade_price = current_trade_price;
                 }
             }
