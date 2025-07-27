@@ -1,7 +1,6 @@
 const WebSocket = require('ws');
 
-// --- Global Error Handlers ---
-// (No changes to this section)
+// --- Global Error Handlers --- (No changes)
 process.on('uncaughtException', (err, origin) => {
     console.error(`[Listener] PID: ${process.pid} --- FATAL: UNCAUGHT EXCEPTION`);
     console.error(err.stack || err);
@@ -15,8 +14,9 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 // --- State Management ---
-// (No changes to this section)
+let heartbeatInterval = null; // **NEW**: To manage the heartbeat timer
 function cleanupAndExit(exitCode = 1) {
+    if (heartbeatInterval) clearInterval(heartbeatInterval); // **NEW**: Stop the heartbeat on exit
     const clientsToTerminate = [internalWsClient, binanceWsClient];
     
     console.error('[Listener] Initiating cleanup...');
@@ -36,15 +36,27 @@ function cleanupAndExit(exitCode = 1) {
 const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
 const MINIMUM_TICK_SIZE = 0.2;
+const HEARTBEAT_INTERVAL_MS = 25000; // **NEW**: Send a ping every 25 seconds.
 
-// --- Connection URLs ---
+// --- Connection URLs --- (No changes)
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
 const BINANCE_FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@trade`;
 
 // --- Listener State Variables ---
 let internalWsClient, binanceWsClient;
 let last_sent_trade_price = null;
-let last_received_trade_price = null; // **NEW**: Store the absolute last price received from Binance.
+let last_received_trade_price = null;
+
+// **NEW**: Heartbeat function to keep the connection alive
+function sendHeartbeat() {
+    if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
+        try {
+            internalWsClient.send(JSON.stringify({ type: 'ping' }));
+        } catch (e) {
+            console.error(`[Internal] Failed to send heartbeat: ${e.message}`);
+        }
+    }
+}
 
 // --- Internal Receiver Connection ---
 function connectToInternalReceiver() {
@@ -55,27 +67,30 @@ function connectToInternalReceiver() {
     
     internalWsClient.on('close', () => {
         console.error('[Internal] Connection closed. Reconnecting...');
+        if (heartbeatInterval) clearInterval(heartbeatInterval); // **NEW**: Stop pings when disconnected
         internalWsClient = null;
         setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
     });
     
-    internalWsClient.on('open', () => console.log('[Internal] Connection established.'));
+    internalWsClient.on('open', () => {
+        console.log('[Internal] Connection established.');
+        // **NEW**: Start sending heartbeats once connected.
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
+        heartbeatInterval = setInterval(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+    });
 
-    // **NEW**: Handle commands from the data_receiver_server
     internalWsClient.on('message', (data) => {
         try {
             const command = JSON.parse(data.toString());
             if (command.action === 'get_fresh_price') {
                 console.log('[Listener] Received command to send fresh price.');
                 if (last_received_trade_price !== null) {
-                    // Send the last known price immediately, regardless of tick size.
                     const payload = {
                         type: 'S',
                         p: last_received_trade_price,
                         timestamp: Date.now()
                     };
                     sendToInternalClient(payload);
-                    // Update the 'last_sent' price to prevent an immediate duplicate broadcast.
                     last_sent_trade_price = last_received_trade_price;
                 } else {
                     console.log('[Listener] Cannot send fresh price, no price has been received from Binance yet.');
@@ -87,7 +102,7 @@ function connectToInternalReceiver() {
     });
 }
 
-// --- Data Forwarding ---
+// --- Data Forwarding --- (No changes)
 function sendToInternalClient(payload) {
     if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
         try {
@@ -96,7 +111,7 @@ function sendToInternalClient(payload) {
     }
 }
 
-// --- Binance Futures Connection ---
+// --- Binance Futures Connection --- (No changes to this function's logic)
 function connectToBinance() {
     binanceWsClient = new WebSocket(BINANCE_FUTURES_STREAM_URL);
     
@@ -109,30 +124,22 @@ function connectToBinance() {
     binanceWsClient.on('message', (data) => {
         try {
             const message = JSON.parse(data.toString());
-
             if (message.e === 'trade' && message.p) {
                 const current_trade_price = parseFloat(message.p);
-                
                 if (isNaN(current_trade_price)) {
                     return;
                 }
-
-                // **MODIFIED**: Always update the last_received_trade_price.
                 last_received_trade_price = current_trade_price;
-
                 const shouldSend = last_sent_trade_price === null || Math.abs(current_trade_price - last_sent_trade_price) >= MINIMUM_TICK_SIZE;
-
                 if (shouldSend) {
                     const payload = {
                         type: 'S',
                         p: current_trade_price,
                         timestamp: Date.now()
                     };
-                    
                     if (last_sent_trade_price === null) {
                         console.log(`[Binance] Sending initial price: ${current_trade_price}`);
                     }
-
                     sendToInternalClient(payload);
                     last_sent_trade_price = current_trade_price;
                 }
