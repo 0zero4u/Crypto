@@ -35,7 +35,7 @@ function cleanupAndExit(exitCode = 1) {
 // --- Listener Configuration ---
 const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
-const MINIMUM_TICK_SIZE = 0.2;
+const MINIMUM_TICK_SIZE = 0.1;
 
 // --- Connection URLs ---
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
