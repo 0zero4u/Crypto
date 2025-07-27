@@ -10,8 +10,8 @@ let listenSocketPublic, listenSocketInternal;
 // This Set will hold all connected Android clients to manually iterate over for broadcasting.
 const androidClients = new Set();
 
-// **NEW**: This object will store the last message and its format (binary/text)
-// received from the internal listener, so we can send it on demand.
+// This object will store the last message and its format (binary/text)
+// received from the internal listener.
 let lastBroadcastData = {
     message: null,
     isBinary: false
@@ -28,43 +28,41 @@ uWS.App({})
         open: (ws) => {
             const clientIp = Buffer.from(ws.getRemoteAddressAsText()).toString();
             console.log(`[Receiver] Public client connected from ${clientIp}. Adding to broadcast set.`);
-            
-            // Add the newly connected client to our manual collection.
             androidClients.add(ws);
         },
         message: (ws, message, isBinary) => {
-            // **MODIFIED**: Handle specific messages from Android clients.
+            // **MODIFIED**: Handle specific messages from Android clients with a delay.
             try {
-                // uWebSockets.js message is an ArrayBuffer. Convert to string for parsing.
                 const messageString = Buffer.from(message).toString();
                 const clientCommand = JSON.parse(messageString);
 
                 // Check for the special "semi_auto" mode request.
                 if (clientCommand.event === 'set_mode' && clientCommand.mode === 'semi_auto') {
-                    console.log(`[Receiver] Client requested 'semi_auto' mode.`);
+                    console.log(`[Receiver] Client requested 'semi_auto' mode. Scheduling price send in 1000ms.`);
                     
-                    // If we have a last known price, send it immediately to THIS client.
-                    if (lastBroadcastData.message) {
-                        try {
-                            console.log(`[Receiver] Sending last known price to the requesting client.`);
-                            ws.send(lastBroadcastData.message, lastBroadcastData.isBinary);
-                        } catch (e) {
-                            console.error(`[Receiver] FAILED to send immediate price to client: ${e.message}`);
+                    // **NEW**: Use setTimeout to introduce a 1000ms delay.
+                    setTimeout(() => {
+                        // Check if we have data at the moment the delay finishes.
+                        if (lastBroadcastData.message) {
+                            // A try-catch is crucial here because the client might
+                            // have disconnected during the 1-second delay.
+                            try {
+                                console.log(`[Receiver] Sending delayed price to client.`);
+                                ws.send(lastBroadcastData.message, lastBroadcastData.isBinary);
+                            } catch (e) {
+                                console.error(`[Receiver] FAILED to send delayed price. Client likely disconnected: ${e.message}`);
+                            }
+                        } else {
+                            console.log(`[Receiver] Delayed send triggered, but no price data is available to send.`);
                         }
-                    } else {
-                        console.log(`[Receiver] Client requested last price, but no price has been received yet.`);
-                    }
+                    }, 1000); // 1000ms = 1 second
                 }
             } catch (e) {
-                // This will catch non-JSON messages or parsing errors.
-                // We can ignore them as they are not valid commands.
-                // console.log(`[Receiver] Received non-command message from public client.`);
+                // Ignore non-command messages.
             }
         },
         close: (ws, code, message) => {
             console.log(`[Receiver] Public client disconnected. Removing from broadcast set.`);
-
-            // IMPORTANT: Remove the client from the collection on disconnect.
             androidClients.delete(ws);
         }
     })
@@ -78,7 +76,7 @@ uWS.App({})
             console.log('[Receiver] Internal listener connected.');
         },
         message: (ws, message, isBinary) => {
-            // **MODIFIED**: Store the latest message before broadcasting it.
+            // Store the latest message before broadcasting it.
             lastBroadcastData.message = message;
             lastBroadcastData.isBinary = isBinary;
 
