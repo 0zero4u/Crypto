@@ -1,7 +1,6 @@
-// binance_listener.js (Optimized with Manual String Slicing - The Correct Low-Latency Approach)
+// binance_listener.js
 const WebSocket = require('ws');
 
-// --- Process-level error handlers ---
 process.on('uncaughtException', (err, origin) => {
     console.error(`[Listener] PID: ${process.pid} --- FATAL: UNCAUGHT EXCEPTION`, err.stack || err);
     cleanupAndExit(1);
@@ -11,7 +10,6 @@ process.on('unhandledRejection', (reason, promise) => {
     cleanupAndExit(1);
 });
 
-// --- Graceful shutdown function ---
 function cleanupAndExit(exitCode = 1) {
     const clientsToTerminate = [internalWsClient, binanceWsClient];
     console.error('[Listener] Initiating cleanup...');
@@ -26,24 +24,37 @@ function cleanupAndExit(exitCode = 1) {
     }, 1000).unref();
 }
 
-// --- Configuration ---
 const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
 const MINIMUM_TICK_SIZE = 0.2;
+
+// Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
 const BINANCE_FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@trade`;
 
-// --- State variables ---
 let internalWsClient, binanceWsClient;
 let last_sent_trade_price = null;
-const payload_to_send = { type: 'S', p: 0 }; // Reusable payload
 
-// --- Internal WebSocket Client ---
-function connectToInternalReceiver() { /* ... implementation from previous response ... */ }
-function sendToInternalClient(payload) { /* ... implementation from previous response ... */ }
-const price_key = '"p":"'; // Define the key we are searching for once
+function connectToInternalReceiver() {
+    if (internalWsClient && (internalWsClient.readyState === WebSocket.OPEN || internalWsClient.readyState === WebSocket.CONNECTING)) return;
+    internalWsClient = new WebSocket(internalReceiverUrl);
+    internalWsClient.on('error', (err) => console.error(`[Internal] WebSocket error: ${err.message}`));
+    internalWsClient.on('close', () => {
+        console.error('[Internal] Connection closed. Reconnecting...');
+        internalWsClient = null;
+        setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
+    });
+    internalWsClient.on('open', () => console.log('[Internal] Connection established.'));
+}
 
-// --- Binance WebSocket Client ---
+function sendToInternalClient(payload) {
+    if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
+        try {
+            internalWsClient.send(JSON.stringify(payload));
+        } catch (e) { console.error(`[Internal] Failed to send message: ${e.message}`); }
+    }
+}
+
 function connectToBinance() {
     binanceWsClient = new WebSocket(BINANCE_FUTURES_STREAM_URL);
     
@@ -54,27 +65,19 @@ function connectToBinance() {
     
     binanceWsClient.on('message', (data) => {
         try {
-            const messageStr = data.toString();
+            const message = JSON.parse(data.toString());
+            if (message.e === 'trade' && message.p) {
+                const current_trade_price = parseFloat(message.p);
+                if (isNaN(current_trade_price)) return;
 
-            // The correct, high-performance string slicing method. NO REGEX.
-            const priceKeyIndex = messageStr.indexOf(price_key);
-            if (priceKeyIndex === -1) return;
+                const shouldSendPrice = (last_sent_trade_price === null) || (Math.abs(current_trade_price - last_sent_trade_price) >= MINIMUM_TICK_SIZE);
 
-            const priceStartIndex = priceKeyIndex + price_key.length;
-            const priceEndIndex = messageStr.indexOf('"', priceStartIndex);
-            if (priceEndIndex === -1) return;
-
-            const priceStr = messageStr.substring(priceStartIndex, priceEndIndex);
-            const current_trade_price = parseFloat(priceStr);
-
-            if (isNaN(current_trade_price)) return;
-
-            if ((last_sent_trade_price === null) || (Math.abs(current_trade_price - last_sent_trade_price) >= MINIMUM_TICK_SIZE)) {
-                payload_to_send.p = current_trade_price;
-                sendToInternalClient(payload_to_send);
-                last_sent_trade_price = current_trade_price;
+                if (shouldSendPrice) {
+                    const payload = { type: 'S', p: current_trade_price };
+                    sendToInternalClient(payload);
+                    last_sent_trade_price = current_trade_price;
+                }
             }
-
         } catch (e) { 
             console.error(`[Binance] Error processing message: ${e.message}`);
         }
@@ -89,7 +92,6 @@ function connectToBinance() {
     });
 }
 
-// --- Application Entry Point ---
 console.log(`[Listener] Starting... PID: ${process.pid}`);
-connectToInternalReceiver(); // Assume this function is defined as before
+connectToInternalReceiver();
 connectToBinance();
