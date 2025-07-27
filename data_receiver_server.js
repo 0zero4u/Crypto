@@ -4,25 +4,23 @@ const uWS = require('uWebSockets.js');
 const PUBLIC_PORT = 8081;
 const INTERNAL_LISTENER_PORT = 8082;
 const IDLE_TIMEOUT_SECONDS = 130;
-const SEMI_AUTO_SEND_DELAY_MS = 1000;
-const MAX_DATA_STALENESS_MS = 1000;
+const SEMI_AUTO_SEND_DELAY_MS = 1000; // Configurable delay for the semi-auto response.
 
 let listenSocketPublic, listenSocketInternal;
-let internalListenerSocket = null;
 
+// This Set will hold all connected Android clients to manually iterate over for broadcasting.
 const androidClients = new Set();
 
-// This state object holds the last valid price data received.
+// This object will store the last message and its format (binary/text)
+// received from the internal listener.
 let lastBroadcastData = {
-    price: null,
-    timestamp: 0
+    message: null,
+    isBinary: false
 };
 
 
 uWS.App({})
-    // ===================================================================
-    //  WORKFLOW FOR PUBLIC CLIENTS (Android App)
-    // ===================================================================
+    // --- Public WebSocket Server (for Android Clients) ---
     .ws('/public', {
         compression: uWS.SHARED_COMPRESSOR,
         maxPayloadLength: 16 * 1024,
@@ -33,44 +31,26 @@ uWS.App({})
             console.log(`[Receiver] Public client connected from ${clientIp}. Adding to broadcast set.`);
             androidClients.add(ws);
         },
-        
-        // This code ONLY runs when a specific Android client sends a message.
         message: (ws, message, isBinary) => {
             try {
                 const messageString = Buffer.from(message).toString();
                 const clientCommand = JSON.parse(messageString);
 
-                // We only care about the 'semi_auto' command.
                 if (clientCommand.event === 'set_mode' && clientCommand.mode === 'semi_auto') {
-                    const isDataAvailable = lastBroadcastData.price !== null;
-                    const isDataFresh = isDataAvailable && (Date.now() - lastBroadcastData.timestamp < MAX_DATA_STALENESS_MS);
-
-                    if (isDataFresh) {
-                        // If data is good, send it to THIS SPECIFIC client after a delay.
-                        // This does NOT affect any other clients.
-                        console.log(`[Receiver] Data is fresh. Scheduling price send in ${SEMI_AUTO_SEND_DELAY_MS}ms.`);
-                        setTimeout(() => {
+                    console.log(`[Receiver] Client requested 'semi_auto' mode. Scheduling price send in ${SEMI_AUTO_SEND_DELAY_MS}ms.`);
+                    
+                    setTimeout(() => {
+                        if (lastBroadcastData.message) {
                             try {
-                                const clientPayload = JSON.stringify({ type: 'S', p: lastBroadcastData.price });
-                                ws.send(clientPayload, false);
+                                console.log(`[Receiver] Sending delayed price to client.`);
+                                ws.send(lastBroadcastData.message, lastBroadcastData.isBinary);
                             } catch (e) {
                                 console.error(`[Receiver] FAILED to send delayed price. Client likely disconnected: ${e.message}`);
                             }
-                        }, SEMI_AUTO_SEND_DELAY_MS);
-                    } else {
-                        // If data is stale, ask the listener for a new price. The new price will be
-                        // broadcast to EVERYONE via the '/internal' message handler below.
-                        if (internalListenerSocket) {
-                            console.log(`[Receiver] Data is stale or unavailable. Requesting fresh price from listener.`);
-                            try {
-                                internalListenerSocket.send(JSON.stringify({ action: 'get_fresh_price' }));
-                            } catch (e) {
-                                console.error(`[Receiver] Failed to send refresh command to listener: ${e.message}`);
-                            }
                         } else {
-                            console.log('[Receiver] Cannot refresh stale data: Internal listener is not connected.');
+                            console.log(`[Receiver] Delayed send triggered, but no price data is available to send.`);
                         }
-                    }
+                    }, SEMI_AUTO_SEND_DELAY_MS);
                 }
             } catch (e) {
                 // Ignore non-command messages.
@@ -81,52 +61,23 @@ uWS.App({})
             androidClients.delete(ws);
         }
     })
-    // ===================================================================
-    //  WORKFLOW FOR INTERNAL LISTENER (binance_listener.js)
-    // ===================================================================
+    // --- Internal WebSocket Server (for binance_listener.js) ---
     .ws('/internal', {
         compression: uWS.DISABLED,
         maxPayloadLength: 4 * 1024,
         idleTimeout: 30,
-        
+
         open: (ws) => {
             console.log('[Receiver] Internal listener connected.');
-            internalListenerSocket = ws;
         },
-
-        // This code runs for EVERY message from binance_listener (pings and price updates).
-        // This is where the STANDARD BROADCAST happens.
         message: (ws, message, isBinary) => {
-            let parsedData;
-            try {
-                const dataString = Buffer.from(message).toString();
-                parsedData = JSON.parse(dataString);
-                
-                // If it's a heartbeat, ignore it and stop. Its only job was to keep the connection alive.
-                if (parsedData.type === 'ping') {
-                    return;
-                }
-                
-                // If it's a valid price message, store the data.
-                if(parsedData.timestamp && typeof parsedData.p !== 'undefined') {
-                    lastBroadcastData.price = parsedData.p;
-                    lastBroadcastData.timestamp = parsedData.timestamp;
-                } else {
-                    return; // Ignore malformed messages.
-                }
-            } catch (e) {
-                console.error(`[Receiver] Error parsing message from internal listener: ${e.message}`);
-                return;
-            }
-
-            // **CRITICAL**: This part broadcasts the price update to ALL connected clients,
-            // ensuring normal clients get their tick-based updates.
-            const clientPayload = JSON.stringify({ type: 'S', p: parsedData.p });
+            lastBroadcastData.message = message;
+            lastBroadcastData.isBinary = isBinary;
 
             if (androidClients.size > 0) {
                 androidClients.forEach(client => {
                     try {
-                        client.send(clientPayload, false);
+                        client.send(message, isBinary);
                     } catch (e) {
                         console.error(`[Receiver] Error sending to a client: ${e.message}`);
                     }
@@ -134,10 +85,7 @@ uWS.App({})
             }
         },
         close: (ws, code, message) => {
-            console.log('[Receiver] Internal listener disconnected. Clearing last known price and socket.');
-            lastBroadcastData.price = null;
-            lastBroadcastData.timestamp = 0;
-            internalListenerSocket = null;
+            console.log('[Receiver] Internal listener disconnected.');
         }
     })
     .listen(PUBLIC_PORT, (token) => {
