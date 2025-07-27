@@ -5,14 +5,13 @@ const PUBLIC_PORT = 8081;
 const INTERNAL_LISTENER_PORT = 8082;
 const IDLE_TIMEOUT_SECONDS = 130;
 const SEMI_AUTO_SEND_DELAY_MS = 1000;
-const MAX_DATA_STALENESS_MS = 500;
+const MAX_DATA_STALENESS_MS = 1000;
 
 let listenSocketPublic, listenSocketInternal;
 let internalListenerSocket = null;
 
 const androidClients = new Set();
 
-// **MODIFIED**: The state object is now cleaner, holding only the necessary data.
 let lastBroadcastData = {
     price: null,
     timestamp: 0
@@ -20,12 +19,11 @@ let lastBroadcastData = {
 
 
 uWS.App({})
-    // --- Public WebSocket Server (for Android Clients) ---
+    // --- Public WebSocket Server (for Android Clients) --- (No changes in this section)
     .ws('/public', {
         compression: uWS.SHARED_COMPRESSOR,
         maxPayloadLength: 16 * 1024,
         idleTimeout: IDLE_TIMEOUT_SECONDS,
-
         open: (ws) => {
             const clientIp = Buffer.from(ws.getRemoteAddressAsText()).toString();
             console.log(`[Receiver] Public client connected from ${clientIp}. Adding to broadcast set.`);
@@ -35,21 +33,18 @@ uWS.App({})
             try {
                 const messageString = Buffer.from(message).toString();
                 const clientCommand = JSON.parse(messageString);
-
                 if (clientCommand.event === 'set_mode' && clientCommand.mode === 'semi_auto') {
                     const isDataAvailable = lastBroadcastData.price !== null;
                     const isDataFresh = isDataAvailable && (Date.now() - lastBroadcastData.timestamp < MAX_DATA_STALENESS_MS);
-
                     if (isDataFresh) {
                         console.log(`[Receiver] Data is fresh. Scheduling price send in ${SEMI_AUTO_SEND_DELAY_MS}ms.`);
                         setTimeout(() => {
                             try {
-                                // **MODIFIED**: Build the client-facing payload without the timestamp.
                                 const clientPayload = JSON.stringify({
                                     type: 'S',
                                     p: lastBroadcastData.price
                                 });
-                                ws.send(clientPayload, false); // isBinary is false for JSON strings
+                                ws.send(clientPayload, false);
                             } catch (e) {
                                 console.error(`[Receiver] FAILED to send delayed price. Client likely disconnected: ${e.message}`);
                             }
@@ -89,15 +84,20 @@ uWS.App({})
         message: (ws, message, isBinary) => {
             let parsedData;
             try {
-                // **MODIFIED**: The primary goal of this handler is now to parse and store data.
                 const dataString = Buffer.from(message).toString();
                 parsedData = JSON.parse(dataString);
+                
+                // **MODIFIED**: Handle ping messages
+                if (parsedData.type === 'ping') {
+                    // This is a heartbeat message. Ignore it and do nothing.
+                    // Its only purpose was to reset the idle timer.
+                    return;
+                }
                 
                 if(parsedData.timestamp && typeof parsedData.p !== 'undefined') {
                     lastBroadcastData.price = parsedData.p;
                     lastBroadcastData.timestamp = parsedData.timestamp;
                 } else {
-                    // Ignore messages that don't have the required fields.
                     return;
                 }
             } catch (e) {
@@ -105,7 +105,6 @@ uWS.App({})
                 return;
             }
 
-            // **MODIFIED**: Build and broadcast the clean, client-facing payload.
             const clientPayload = JSON.stringify({
                 type: 'S',
                 p: parsedData.p
@@ -114,7 +113,7 @@ uWS.App({})
             if (androidClients.size > 0) {
                 androidClients.forEach(client => {
                     try {
-                        client.send(clientPayload, false); // isBinary is false for JSON strings
+                        client.send(clientPayload, false);
                     } catch (e) {
                         console.error(`[Receiver] Error sending to a client: ${e.message}`);
                     }
@@ -123,12 +122,12 @@ uWS.App({})
         },
         close: (ws, code, message) => {
             console.log('[Receiver] Internal listener disconnected. Clearing last known price and socket.');
-            // **MODIFIED**: Reset the new state object.
             lastBroadcastData.price = null;
             lastBroadcastData.timestamp = 0;
             internalListenerSocket = null;
         }
     })
+    // --- Listen and Shutdown --- (No changes here)
     .listen(PUBLIC_PORT, (token) => {
         listenSocketPublic = token;
         if (token) {
@@ -148,7 +147,6 @@ uWS.App({})
         }
     });
 
-// --- Graceful Shutdown ---
 function shutdown() {
     console.log('[Receiver] Shutting down...');
     if (listenSocketPublic) {
