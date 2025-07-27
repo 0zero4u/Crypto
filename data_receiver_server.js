@@ -4,6 +4,7 @@ const uWS = require('uWebSockets.js');
 const PUBLIC_PORT = 8081;
 const INTERNAL_LISTENER_PORT = 8082;
 const IDLE_TIMEOUT_SECONDS = 130; // Connection is closed if idle for this duration.
+const SEMI_AUTO_SEND_DELAY_MS = 1000; // **NEW**: Configurable delay for the semi-auto response.
 
 let listenSocketPublic, listenSocketInternal;
 
@@ -31,21 +32,16 @@ uWS.App({})
             androidClients.add(ws);
         },
         message: (ws, message, isBinary) => {
-            // **MODIFIED**: Handle specific messages from Android clients with a delay.
             try {
                 const messageString = Buffer.from(message).toString();
                 const clientCommand = JSON.parse(messageString);
 
-                // Check for the special "semi_auto" mode request.
                 if (clientCommand.event === 'set_mode' && clientCommand.mode === 'semi_auto') {
-                    console.log(`[Receiver] Client requested 'semi_auto' mode. Scheduling price send in 1000ms.`);
+                    // **MODIFIED**: Now uses the new constant for the delay.
+                    console.log(`[Receiver] Client requested 'semi_auto' mode. Scheduling price send in ${SEMI_AUTO_SEND_DELAY_MS}ms.`);
                     
-                    // **NEW**: Use setTimeout to introduce a 1000ms delay.
                     setTimeout(() => {
-                        // Check if we have data at the moment the delay finishes.
                         if (lastBroadcastData.message) {
-                            // A try-catch is crucial here because the client might
-                            // have disconnected during the 1-second delay.
                             try {
                                 console.log(`[Receiver] Sending delayed price to client.`);
                                 ws.send(lastBroadcastData.message, lastBroadcastData.isBinary);
@@ -55,7 +51,7 @@ uWS.App({})
                         } else {
                             console.log(`[Receiver] Delayed send triggered, but no price data is available to send.`);
                         }
-                    }, 1000); // 1000ms = 1 second
+                    }, SEMI_AUTO_SEND_DELAY_MS); // Use the constant here.
                 }
             } catch (e) {
                 // Ignore non-command messages.
@@ -76,11 +72,9 @@ uWS.App({})
             console.log('[Receiver] Internal listener connected.');
         },
         message: (ws, message, isBinary) => {
-            // Store the latest message before broadcasting it.
             lastBroadcastData.message = message;
             lastBroadcastData.isBinary = isBinary;
 
-            // Manual broadcast loop to all connected Android clients.
             if (androidClients.size > 0) {
                 androidClients.forEach(client => {
                     try {
@@ -129,4 +123,4 @@ function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-console.log(`[Receiver] PID: ${process.pid} --- Server initialized in manual broadcast mode.`);
+console.log(`[Receiver] PID: ${process.pid} --- Server initialized in manual broadcast mode.`);```
