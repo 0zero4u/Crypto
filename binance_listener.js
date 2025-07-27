@@ -82,23 +82,31 @@ function connectToBinance() {
                 const current_trade_price = parseFloat(message.p);
                 
                 if (isNaN(current_trade_price)) {
-                    return;
+                    return; // Ignore if price is not a valid number
                 }
 
-                // Send the first price, OR send if the price difference is large enough.
-                const shouldSend = last_sent_trade_price === null || Math.abs(current_trade_price - last_sent_trade_price) >= MINIMUM_TICK_SIZE;
+                // MODIFIED LOGIC: Determine if the price should be sent.
+                let shouldSend = false;
 
+                if (last_sent_trade_price === null) {
+                    // Case 1: First valid trade price received. Always send.
+                    shouldSend = true;
+                } else {
+                    // Case 2: A price has been sent before. Check the difference.
+                    const price_difference = current_trade_price - last_sent_trade_price;
+                    if (Math.abs(price_difference) >= MINIMUM_TICK_SIZE) {
+                        shouldSend = true;
+                    }
+                }
+                
                 if (shouldSend) {
                     const payload = {
                         type: 'S',
                         p: current_trade_price
                     };
-                    
-                    if (last_sent_trade_price === null) {
-                        console.log(`[Binance] Sending initial price: ${current_trade_price}`);
-                    }
-
                     sendToInternalClient(payload);
+                    
+                    // Update the last sent price *only* when we send it.
                     last_sent_trade_price = current_trade_price;
                 }
             }
