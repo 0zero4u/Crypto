@@ -25,6 +25,7 @@
   "author": "0zero4u",
   "license": "ISC",
   "dependencies": {
+    "uWebSockets.js": "uNetworking/uWebSockets.js#v20.48.0",
     "ws": "^8.17.0"
   }
 }
