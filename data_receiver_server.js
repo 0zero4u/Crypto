@@ -6,8 +6,8 @@ const PUBLIC_PORT = 8081;
 const INTERNAL_LISTENER_PORT = 8082;
 const IDLE_TIMEOUT_SECONDS = 130;
 
-// Binance API URL for an instant price quote
-const BINANCE_TICKER_URL = 'https://fapi.binance.com/fapi/v1/ticker/24hr?symbol=BTCUSDT';
+// Binance API URL for an instant spot price quote
+const BINANCE_TICKER_URL = 'https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT';
 
 let listenSocketPublic, listenSocketInternal;
 const androidClients = new Set();
