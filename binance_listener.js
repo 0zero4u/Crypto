@@ -41,7 +41,8 @@ const MINIMUM_TICK_SIZE = 0.2;
 
 // Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
-const BINANCE_FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@trade`;
+// --- MODIFIED: Updated URL to Binance Spot stream ---
+const BINANCE_SPOT_STREAM_URL = `wss://stream.binance.com:9443/ws/${SYMBOL}@trade`;
 
 // --- WebSocket Clients and State ---
 let internalWsClient, binanceWsClient;
@@ -88,7 +89,8 @@ function sendToInternalClient(payload) {
  * Establishes and maintains the connection to the Binance WebSocket stream.
  */
 function connectToBinance() {
-    binanceWsClient = new WebSocket(BINANCE_FUTURES_STREAM_URL);
+    // --- MODIFIED: Using the new Spot URL variable ---
+    binanceWsClient = new WebSocket(BINANCE_SPOT_STREAM_URL);
     
     binanceWsClient.on('open', () => {
         console.log(`[Binance] Connection established to stream: ${SYMBOL}@trade`);
