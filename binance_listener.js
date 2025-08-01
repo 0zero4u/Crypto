@@ -1,7 +1,4 @@
 // bybit_listener_optimized.js
-// --- MODIFICATION: The 'ws' library will now use C++ addons for sending data ---
-// By including `bufferutil` and `utf-8-validate` in package.json,
-// all send operations from this WebSocket client are C++ accelerated.
 const WebSocket = require('ws');
 
 // --- Process-wide Error Handling ---
@@ -44,15 +41,14 @@ const MINIMUM_TICK_SIZE = 0.1;
 
 // Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
+// --- MODIFIED: Updated URL to Bybit V5 Spot stream ---
 const EXCHANGE_STREAM_URL = 'wss://stream.bybit.com/v5/public/spot';
 
 // --- WebSocket Clients and State ---
-// This client's .send() method will be C++ accelerated.
-let internalWsClient;
-// This client receives data from the exchange.
-let exchangeWsClient;
-
+let internalWsClient, exchangeWsClient;
 let last_sent_price = null;
+
+// Optimization: Reusable payload object to prevent GC pressure.
 const payload_to_send = { type: 'S', p: 0.0 };
 
 /**
@@ -60,29 +56,28 @@ const payload_to_send = { type: 'S', p: 0.0 };
  */
 function connectToInternalReceiver() {
     if (internalWsClient && (internalWsClient.readyState === WebSocket.OPEN || internalWsClient.readyState === WebSocket.CONNECTING)) return;
-    
-    // This WebSocket client instance is created from the 'ws' library.
+
     internalWsClient = new WebSocket(internalReceiverUrl);
 
     internalWsClient.on('error', (err) => console.error(`[Internal] WebSocket error: ${err.message}`));
+
     internalWsClient.on('close', () => {
         console.error('[Internal] Connection closed. Reconnecting...');
-        internalWsClient = null;
+        internalWsClient = null; // Important to allow reconnection
         setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
     });
+
     internalWsClient.on('open', () => console.log('[Internal] Connection established.'));
 }
 
 /**
  * Sends a payload to the internal WebSocket client.
- * --- THIS FUNCTION NOW USES C++ UNDER THE HOOD ---
- * Because the 'bufferutil' and 'utf-8-validate' packages are installed,
- * this 'send' call is automatically delegated to high-performance C++ code.
  * @param {object} payload - The data to send.
  */
 function sendToInternalClient(payload) {
     if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
         try {
+            // The payload object is mutated and sent, not recreated.
             internalWsClient.send(JSON.stringify(payload));
         } catch (e) {
             console.error(`[Internal] Failed to send message: ${e.message}`);
@@ -98,6 +93,8 @@ function connectToExchange() {
 
     exchangeWsClient.on('open', () => {
         console.log(`[Bybit] Connection established to: ${EXCHANGE_STREAM_URL}`);
+        
+        // --- MODIFIED: Subscribe to the orderbook topic for BTCUSDT ---
         const subscriptionMessage = {
             op: "subscribe",
             args: [`orderbook.1.${SYMBOL}`]
@@ -108,22 +105,30 @@ function connectToExchange() {
         } catch(e) {
             console.error(`[Bybit] Failed to send subscription message: ${e.message}`);
         }
-        last_sent_price = null;
+        
+        last_sent_price = null; // Reset on new connection
     });
 
     exchangeWsClient.on('message', (data) => {
         try {
             const message = JSON.parse(data.toString());
+
+            // --- MODIFIED: Process Bybit orderbook data to get best bid price ---
+            // Check if it's a snapshot for the orderbook. [8]
             if (message.topic && message.topic.startsWith('orderbook.1') && message.data) {
                 const bids = message.data.b;
+                
+                // The first element in the bids array is the best bid (highest price). [6]
                 if (bids && bids.length > 0 && bids[0].length > 0) {
                     const bestBidPrice = parseFloat(bids[0][0]);
+
                     if (isNaN(bestBidPrice)) return;
 
                     const shouldSendPrice = (last_sent_price === null) || (Math.abs(bestBidPrice - last_sent_price) >= MINIMUM_TICK_SIZE);
+
                     if (shouldSendPrice) {
+                        // Optimization: Mutate the single payload object instead of creating a new one.
                         payload_to_send.p = bestBidPrice;
-                        // This call now leverages C++ for sending data.
                         sendToInternalClient(payload_to_send);
                         last_sent_price = bestBidPrice;
                     }
@@ -135,12 +140,14 @@ function connectToExchange() {
     });
 
     exchangeWsClient.on('error', (err) => console.error('[Bybit] Connection error:', err.message));
+
     exchangeWsClient.on('close', () => {
         console.error('[Bybit] Connection closed. Reconnecting...');
-        exchangeWsClient = null;
+        exchangeWsClient = null; // Important to allow reconnection
         setTimeout(connectToExchange, RECONNECT_INTERVAL_MS);
     });
     
+    // Bybit requires a ping every 20 seconds to keep the connection alive
     const heartbeatInterval = setInterval(() => {
         if (exchangeWsClient && exchangeWsClient.readyState === WebSocket.OPEN) {
             try {
@@ -158,3 +165,4 @@ function connectToExchange() {
 console.log(`[Listener] Starting... PID: ${process.pid}`);
 connectToInternalReceiver();
 connectToExchange();
+    
