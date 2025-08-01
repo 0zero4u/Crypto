@@ -20,7 +20,8 @@ uWS.App({})
 
         open: (ws) => {
             const clientIp = Buffer.from(ws.getRemoteAddressAsText()).toString();
-            console.log(`[Receiver] Public client connected from ${clientIp}. Adding to broadcast set.`);
+            // --- LOG ELIMINATED ---
+            // console.log(`[Receiver] Public client connected from ${clientIp}. Adding to broadcast set.`);
             androidClients.add(ws);
         },
         message: async (ws, message, isBinary) => {
@@ -28,7 +29,8 @@ uWS.App({})
                 const request = JSON.parse(Buffer.from(message).toString());
 
                 if (request.event === 'set_mode' && request.mode === 'semi_auto') {
-                    console.log('[Receiver] Received semi_auto request. Fetching instant price for client.');
+                    // --- LOG ELIMINATED ---
+                    // console.log('[Receiver] Received semi_auto request. Fetching instant price for client.');
                     const response = await axios.get(BINANCE_TICKER_URL);
                     const lastPrice = parseFloat(response.data.lastPrice);
 
@@ -36,7 +38,8 @@ uWS.App({})
                         const payload = { type: 'S', p: lastPrice };
                         try {
                            ws.send(JSON.stringify(payload), isBinary);
-                           console.log(`[Receiver] Sent instant price ${lastPrice} to semi_auto client.`);
+                           // --- LOG ELIMINATED ---
+                           // console.log(`[Receiver] Sent instant price ${lastPrice} to semi_auto client.`);
                         } catch (e) {
                            console.error(`[Receiver] Error sending instant price to client: ${e.message}`);
                         }
@@ -47,7 +50,8 @@ uWS.App({})
             }
         },
         close: (ws, code, message) => {
-            console.log(`[Receiver] Public client disconnected. Removing from broadcast set.`);
+            // --- LOG ELIMINATED ---
+            // console.log(`[Receiver] Public client disconnected. Removing from broadcast set.`);
             androidClients.delete(ws);
         }
     })
@@ -57,7 +61,8 @@ uWS.App({})
         idleTimeout: 30,
 
         open: (ws) => {
-            console.log('[Receiver] Internal listener connected.');
+            // --- LOG ELIMINATED ---
+            // console.log('[Receiver] Internal listener connected.');
         },
         message: (ws, message, isBinary) => {
             if (androidClients.size > 0) {
@@ -71,7 +76,8 @@ uWS.App({})
             }
         },
         close: (ws, code, message) => {
-            console.log('[Receiver] Internal listener disconnected.');
+            // --- LOG ELIMINATED ---
+            // console.log('[Receiver] Internal listener disconnected.');
         }
     })
     .listen(PUBLIC_PORT, (token) => {
