@@ -59,15 +59,18 @@ function connectToInternalReceiver() {
 
     internalWsClient = new WebSocket(internalReceiverUrl);
 
-    internalWsClient.on('error', (err) => console.error(`[Internal] WebSocket error: ${err.message}`));
+    // --- LOG ELIMINATED ---
+    // internalWsClient.on('error', (err) => console.error(`[Internal] WebSocket error: ${err.message}`));
 
     internalWsClient.on('close', () => {
-        console.error('[Internal] Connection closed. Reconnecting...');
+        // --- LOG ELIMINATED ---
+        // console.error('[Internal] Connection closed. Reconnecting...');
         internalWsClient = null; // Important to allow reconnection
         setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
     });
 
-    internalWsClient.on('open', () => console.log('[Internal] Connection established.'));
+    // --- LOG ELIMINATED ---
+    // internalWsClient.on('open', () => console.log('[Internal] Connection established.')); 
 }
 
 /**
@@ -80,7 +83,8 @@ function sendToInternalClient(payload) {
             // The payload object is mutated and sent, not recreated.
             internalWsClient.send(JSON.stringify(payload));
         } catch (e) {
-            console.error(`[Internal] Failed to send message: ${e.message}`);
+            // --- LOG ELIMINATED ---
+            // console.error(`[Internal] Failed to send message: ${e.message}`);
         }
     }
 }
@@ -92,7 +96,8 @@ function connectToExchange() {
     exchangeWsClient = new WebSocket(EXCHANGE_STREAM_URL);
 
     exchangeWsClient.on('open', () => {
-        console.log(`[Bybit] Connection established to: ${EXCHANGE_STREAM_URL}`);
+        // --- LOG ELIMINATED ---
+        // console.log(`[Bybit] Connection established to: ${EXCHANGE_STREAM_URL}`);
         
         // --- MODIFIED: Subscribe to the orderbook topic for BTCUSDT ---
         const subscriptionMessage = {
@@ -101,9 +106,11 @@ function connectToExchange() {
         };
         try {
             exchangeWsClient.send(JSON.stringify(subscriptionMessage));
-            console.log(`[Bybit] Subscribed to ${subscriptionMessage.args[0]}`);
+            // --- LOG ELIMINATED ---
+            // console.log(`[Bybit] Subscribed to ${subscriptionMessage.args[0]}`);
         } catch(e) {
-            console.error(`[Bybit] Failed to send subscription message: ${e.message}`);
+            // --- LOG ELIMINATED ---
+            // console.error(`[Bybit] Failed to send subscription message: ${e.message}`);
         }
         
         last_sent_price = null; // Reset on new connection
@@ -135,14 +142,17 @@ function connectToExchange() {
                 }
             }
         } catch (e) {
-            console.error(`[Bybit] Error processing message: ${e.message}`);
+            // --- LOG ELIMINATED ---
+            // console.error(`[Bybit] Error processing message: ${e.message}`);
         }
     });
-
-    exchangeWsClient.on('error', (err) => console.error('[Bybit] Connection error:', err.message));
+    
+    // --- LOG ELIMINATED ---
+    // exchangeWsClient.on('error', (err) => console.error('[Bybit] Connection error:', err.message));
 
     exchangeWsClient.on('close', () => {
-        console.error('[Bybit] Connection closed. Reconnecting...');
+        // --- LOG ELIMINATED ---
+        // console.error('[Bybit] Connection closed. Reconnecting...');
         exchangeWsClient = null; // Important to allow reconnection
         setTimeout(connectToExchange, RECONNECT_INTERVAL_MS);
     });
@@ -153,7 +163,8 @@ function connectToExchange() {
             try {
                 exchangeWsClient.send(JSON.stringify({ op: 'ping' }));
             } catch (e) {
-                console.error(`[Bybit] Failed to send ping: ${e.message}`);
+                // --- LOG ELIMINATED ---
+                // console.error(`[Bybit] Failed to send ping: ${e.message}`);
             }
         } else {
             clearInterval(heartbeatInterval);
@@ -162,7 +173,7 @@ function connectToExchange() {
 }
 
 // --- Script Entry Point ---
-console.log(`[Listener] Starting... PID: ${process.pid}`);
+// --- LOG ELIMINATED ---
+// console.log(`[Listener] Starting... PID: ${process.pid}`);
 connectToInternalReceiver();
-connectToExchange();
-    
+connectToExchange();```
