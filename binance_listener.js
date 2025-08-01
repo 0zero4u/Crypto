@@ -121,13 +121,11 @@ function connectToExchange() {
             const message = JSON.parse(data.toString());
 
             // --- MODIFIED: Process Bybit orderbook data to get best bid price ---
-            // Check if it's a snapshot for the orderbook. [8]
             if (message.topic && message.topic.startsWith('orderbook.1') && message.data) {
                 const bids = message.data.b;
                 
-                // The first element in the bids array is the best bid (highest price). [6]
-                if (bids && bids.length > 0 && bids[0].length > 0) {
-                    const bestBidPrice = parseFloat(bids[0][0]);
+                if (bids && bids.length > 0 && bids.length > 0) {
+                    const bestBidPrice = parseFloat(bids);
 
                     if (isNaN(bestBidPrice)) return;
 
@@ -176,4 +174,4 @@ function connectToExchange() {
 // --- LOG ELIMINATED ---
 // console.log(`[Listener] Starting... PID: ${process.pid}`);
 connectToInternalReceiver();
-connectToExchange();```
+connectToExchange();
