@@ -1,167 +1,153 @@
+
 // bybit_listener_optimized.js
-const WebSocket = require('ws');
+const uWS = require('uWebSockets.js');
 
 // --- Process-wide Error Handling ---
 process.on('uncaughtException', (err, origin) => {
     console.error(`[Listener] PID: ${process.pid} --- FATAL: UNCAUGHT EXCEPTION`, err.stack || err);
-    cleanupAndExit(1);
+    process.exit(1); // uWS doesn't have a built-in cleanup, so we exit directly
 });
 process.on('unhandledRejection', (reason, promise) => {
     console.error(`[Listener] PID: ${process.pid} --- FATAL: UNHANDLED PROMISE REJECTION`, reason);
-    cleanupAndExit(1);
+    process.exit(1);
 });
-
-/**
- * Gracefully terminates WebSocket clients and exits the process.
- * @param {number} [exitCode=1] - The exit code to use.
- */
-function cleanupAndExit(exitCode = 1) {
-    const clientsToTerminate = [internalWsClient, exchangeWsClient];
-    console.error('[Listener] Initiating cleanup...');
-    clientsToTerminate.forEach(client => {
-        if (client && (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING)) {
-            try {
-                client.terminate();
-            } catch (e) {
-                console.error(`[Listener] Error during WebSocket termination: ${e.message}`);
-            }
-        }
-    });
-    // Allow time for cleanup before force-exiting
-    setTimeout(() => {
-        console.error(`[Listener] Exiting with code ${exitCode}.`);
-        process.exit(exitCode);
-    }, 1000).unref();
-}
 
 // --- Configuration ---
 const SYMBOL = 'BTCUSDT';
 const RECONNECT_INTERVAL_MS = 5000;
 const MINIMUM_TICK_SIZE = 0.1;
 
-// Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
-// --- MODIFIED: Updated URL to Bybit V5 Spot stream ---
 const EXCHANGE_STREAM_URL = 'wss://stream.bybit.com/v5/public/spot';
 
-// --- WebSocket Clients and State ---
-let internalWsClient, exchangeWsClient;
+// --- WebSocket State Management ---
+let internalWs = null;      // Will hold the uWS socket for the internal connection
+let exchangeWs = null;      // Will hold the uWS socket for the exchange connection
+let heartbeatInterval = null;
 let last_sent_price = null;
-
-// Optimization: Reusable payload object to prevent GC pressure.
 const payload_to_send = { type: 'S', p: 0.0 };
-
-/**
- * Establishes and maintains the connection to the internal WebSocket receiver.
- */
-function connectToInternalReceiver() {
-    if (internalWsClient && (internalWsClient.readyState === WebSocket.OPEN || internalWsClient.readyState === WebSocket.CONNECTING)) return;
-
-    internalWsClient = new WebSocket(internalReceiverUrl);
-
-    internalWsClient.on('error', (err) => console.error(`[Internal] WebSocket error: ${err.message}`));
-
-    internalWsClient.on('close', () => {
-        console.error('[Internal] Connection closed. Reconnecting...');
-        internalWsClient = null; // Important to allow reconnection
-        setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
-    });
-
-    internalWsClient.on('open', () => console.log('[Internal] Connection established.'));
-}
 
 /**
  * Sends a payload to the internal WebSocket client.
  * @param {object} payload - The data to send.
  */
 function sendToInternalClient(payload) {
-    if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
+    // Check if the internalWs object is alive before sending
+    if (internalWs) {
         try {
-            // The payload object is mutated and sent, not recreated.
-            internalWsClient.send(JSON.stringify(payload));
+            internalWs.send(JSON.stringify(payload));
         } catch (e) {
-            console.error(`[Internal] Failed to send message: ${e.message}`);
+            console.error(`[Internal] Failed to send message: ${e.message}. The connection might be closing.`);
+            // uWS can throw if the socket is closed during the send operation
         }
     }
 }
 
-/**
- * Establishes and maintains the connection to the Bybit WebSocket stream.
- */
+const app = uWS.App({});
+
 function connectToExchange() {
-    exchangeWsClient = new WebSocket(EXCHANGE_STREAM_URL);
+    app.ws(EXCHANGE_STREAM_URL, {
+        /* Options */
+        compression: uWS.SHARED_COMPRESSOR,
+        maxPayloadLength: 16 * 1024,
+        idleTimeout: 30, // Bybit requires pings every 20s, so 30s timeout is safe
 
-    exchangeWsClient.on('open', () => {
-        console.log(`[Bybit] Connection established to: ${EXCHANGE_STREAM_URL}`);
-        
-        // --- MODIFIED: Subscribe to the orderbook topic for BTCUSDT ---
-        const subscriptionMessage = {
-            op: "subscribe",
-            args: [`orderbook.1.${SYMBOL}`]
-        };
-        try {
-            exchangeWsClient.send(JSON.stringify(subscriptionMessage));
+        /* Handlers */
+        open: (ws) => {
+            exchangeWs = ws;
+            console.log(`[Bybit] Connection established to: ${EXCHANGE_STREAM_URL}`);
+            
+            const subscriptionMessage = { op: "subscribe", args: [`orderbook.1.${SYMBOL}`] };
+            ws.send(JSON.stringify(subscriptionMessage));
             console.log(`[Bybit] Subscribed to ${subscriptionMessage.args[0]}`);
-        } catch(e) {
-            console.error(`[Bybit] Failed to send subscription message: ${e.message}`);
-        }
-        
-        last_sent_price = null; // Reset on new connection
-    });
+            
+            last_sent_price = null; // Reset on new connection
 
-    exchangeWsClient.on('message', (data) => {
-        try {
-            const message = JSON.parse(data.toString());
+            // Bybit requires a ping every 20 seconds
+            heartbeatInterval = setInterval(() => {
+                if (exchangeWs) { // Ensure socket still exists
+                    exchangeWs.send(JSON.stringify({ op: 'ping' }));
+                }
+            }, 20000);
+        },
 
-            // --- MODIFIED: Process Bybit orderbook data to get best bid price ---
-            // Check if it's a snapshot for the orderbook. [8]
-            if (message.topic && message.topic.startsWith('orderbook.1') && message.data) {
-                const bids = message.data.b;
-                
-                // The first element in the bids array is the best bid (highest price). [6]
-                if (bids && bids.length > 0 && bids[0].length > 0) {
-                    const bestBidPrice = parseFloat(bids[0][0]);
+        message: (ws, message, isBinary) => {
+            try {
+                const data = JSON.parse(Buffer.from(message).toString());
+                if (data.topic && data.topic.startsWith('orderbook.1') && data.data) {
+                    const bids = data.data.b;
+                    if (bids && bids.length > 0 && bids[0].length > 0) {
+                        const bestBidPrice = parseFloat(bids[0][0]);
+                        if (isNaN(bestBidPrice)) return;
 
-                    if (isNaN(bestBidPrice)) return;
-
-                    const shouldSendPrice = (last_sent_price === null) || (Math.abs(bestBidPrice - last_sent_price) >= MINIMUM_TICK_SIZE);
-
-                    if (shouldSendPrice) {
-                        // Optimization: Mutate the single payload object instead of creating a new one.
-                        payload_to_send.p = bestBidPrice;
-                        sendToInternalClient(payload_to_send);
-                        last_sent_price = bestBidPrice;
+                        const shouldSendPrice = (last_sent_price === null) || (Math.abs(bestBidPrice - last_sent_price) >= MINIMUM_TICK_SIZE);
+                        if (shouldSendPrice) {
+                            payload_to_send.p = bestBidPrice;
+                            sendToInternalClient(payload_to_send);
+                            last_sent_price = bestBidPrice;
+                        }
                     }
                 }
-            }
-        } catch (e) {
-            console.error(`[Bybit] Error processing message: ${e.message}`);
-        }
-    });
-
-    exchangeWsClient.on('error', (err) => console.error('[Bybit] Connection error:', err.message));
-
-    exchangeWsClient.on('close', () => {
-        console.error('[Bybit] Connection closed. Reconnecting...');
-        exchangeWsClient = null; // Important to allow reconnection
-        setTimeout(connectToExchange, RECONNECT_INTERVAL_MS);
-    });
-    
-    // Bybit requires a ping every 20 seconds to keep the connection alive
-    const heartbeatInterval = setInterval(() => {
-        if (exchangeWsClient && exchangeWsClient.readyState === WebSocket.OPEN) {
-            try {
-                exchangeWsClient.send(JSON.stringify({ op: 'ping' }));
             } catch (e) {
-                console.error(`[Bybit] Failed to send ping: ${e.message}`);
+                console.error(`[Bybit] Error processing message: ${e.message}`);
             }
-        } else {
-            clearInterval(heartbeatInterval);
+        },
+
+        close: (ws, code, message) => {
+            exchangeWs = null;
+            if (heartbeatInterval) clearInterval(heartbeatInterval);
+            console.error(`[Bybit] Connection closed. Code: ${code}. Reconnecting...`);
+            setTimeout(connectToExchange, RECONNECT_INTERVAL_MS);
+        },
+
+        drain: (ws) => {
+            // console.log('[Bybit] WebSocket backpressure drained');
         }
-    }, 20000);
+    });
 }
 
+function connectToInternalReceiver() {
+    app.ws(internalReceiverUrl, {
+        /* Options */
+        compression: uWS.DISABLED, // Matches receiver config
+        maxPayloadLength: 4 * 1024,
+        idleTimeout: 35, // Should be higher than receiver's idle timeout
+
+        /* Handlers */
+        open: (ws) => {
+            internalWs = ws;
+            console.log('[Internal] Connection established.');
+        },
+
+        message: (ws, message, isBinary) => {
+            // This client only sends, not expecting messages
+        },
+
+        close: (ws, code, message) => {
+            internalWs = null;
+            console.error(`[Internal] Connection closed. Code: ${code}. Reconnecting...`);
+            setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
+        },
+
+        drain: (ws) => {
+            // console.log('[Internal] WebSocket backpressure drained');
+        }
+    });
+}
+
+
 // --- Script Entry Point ---
-console.log(`[Listener] Starting... PID: ${process.pid}`);
+console.log(`[Listener] Starting with uWebSockets.js... PID: ${process.pid}`);
 connectToInternalReceiver();
 connectToExchange();
+
+// uWebSockets.js requires a listening port to run the event loop,
+// but we can use a dummy one since this is a client-only script.
+app.listen(9001, (token) => {
+    if (token) {
+        console.log('[Listener] Event loop started.');
+    } else {
+        console.error('[Listener] FAILED to start event loop.');
+        process.exit(1);
+    }
+});
