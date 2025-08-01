@@ -1,3 +1,4 @@
+
 {
   "name": "crypto-binance-listener",
   "version": "1.0.0",
@@ -27,6 +28,8 @@
   "dependencies": {
     "axios": "^1.7.2",
     "uWebSockets.js": "uNetworking/uWebSockets.js#v20.48.0",
-    "ws": "^8.17.0"
+    "ws": "^8.17.0",
+    "bufferutil": "^4.0.8",
+    "utf-8-validate": "^6.0.4"
   }
 }
