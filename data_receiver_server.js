@@ -1,101 +1,95 @@
+
 // data_receiver_server.js
 const uWS = require('uWebSockets.js');
-const axios = require('axios'); // This dependency is now correctly managed by package.json
+const axios = require('axios');
 
 const PUBLIC_PORT = 8081;
 const INTERNAL_LISTENER_PORT = 8082;
 const IDLE_TIMEOUT_SECONDS = 130;
+// A topic name for the server's internal use. The client will never see or use this.
+const PRICE_BROADCAST_TOPIC = 'all_clients_price_stream';
 
-// Binance API URL for an instant spot price quote
 const BINANCE_TICKER_URL = 'https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT';
 
 let listenSocketPublic, listenSocketInternal;
-const androidClients = new Set();
+// The native pub/sub system replaces our manual client list. This is the "list" you wanted,
+// but it's managed by the C++ core for maximum speed.
+// const androidClients = new Set(); // <-- No longer needed.
 
-uWS.App({})
-    .ws('/public', {
-        compression: uWS.SHARED_COMPRESSOR,
-        maxPayloadLength: 16 * 1024,
-        idleTimeout: IDLE_TIMEOUT_SECONDS,
+const app = uWS.App({});
 
-        open: (ws) => {
-            const clientIp = Buffer.from(ws.getRemoteAddressAsText()).toString();
-            // --- LOG ELIMINATED ---
-            // console.log(`[Receiver] Public client connected from ${clientIp}. Adding to broadcast set.`);
-            androidClients.add(ws);
-        },
-        message: async (ws, message, isBinary) => {
-            try {
-                const request = JSON.parse(Buffer.from(message).toString());
+app.ws('/public', {
+    compression: uWS.SHARED_COMPRESSOR,
+    maxPayloadLength: 16 * 1024,
+    idleTimeout: IDLE_TIMEOUT_SECONDS,
 
-                if (request.event === 'set_mode' && request.mode === 'semi_auto') {
-                    // --- LOG ELIMINATED ---
-                    // console.log('[Receiver] Received semi_auto request. Fetching instant price for client.');
-                    const response = await axios.get(BINANCE_TICKER_URL);
-                    const lastPrice = parseFloat(response.data.lastPrice);
+    open: (ws) => {
+        // --- THIS IS THE KEY ---
+        // Implicitly subscribe every connecting client to the broadcast channel.
+        // The client does not need to send any message. Its connection *is* the subscription.
+        ws.subscribe(PRICE_BROADCAST_TOPIC);
+        
+        const clientIp = Buffer.from(ws.getRemoteAddressAsText()).toString();
+        // This log is just for the server admin to see.
+        // console.log(`[Receiver] Client from ${clientIp} auto-subscribed to price stream.`);
+    },
+    message: async (ws, message, isBinary) => {
+        // Handling for individual client requests remains the same.
+        // This does not interfere with the broadcast.
+        try {
+            const request = JSON.parse(Buffer.from(message).toString());
 
-                    if (!isNaN(lastPrice)) {
-                        const payload = { type: 'S', p: lastPrice };
-                        try {
-                           ws.send(JSON.stringify(payload), isBinary);
-                           // --- LOG ELIMINATED ---
-                           // console.log(`[Receiver] Sent instant price ${lastPrice} to semi_auto client.`);
-                        } catch (e) {
-                           console.error(`[Receiver] Error sending instant price to client: ${e.message}`);
-                        }
+            if (request.event === 'set_mode' && request.mode === 'semi_auto') {
+                const response = await axios.get(BINANCE_TICKER_URL);
+                const lastPrice = parseFloat(response.data.lastPrice);
+
+                if (!isNaN(lastPrice)) {
+                    const payload = { type: 'S', p: lastPrice };
+                    try {
+                       ws.send(JSON.stringify(payload), isBinary);
+                    } catch (e) {
+                       console.error(`[Receiver] Error sending instant price to client: ${e.message}`);
                     }
                 }
-            } catch (e) {
-                // Non-JSON or irrelevant message received, can be ignored.
             }
-        },
-        close: (ws, code, message) => {
-            // --- LOG ELIMINATED ---
-            // console.log(`[Receiver] Public client disconnected. Removing from broadcast set.`);
-            androidClients.delete(ws);
+        } catch (e) {
+            // Irrelevant message.
         }
-    })
-    .ws('/internal', {
-        compression: uWS.DISABLED,
-        maxPayloadLength: 4 * 1024,
-        idleTimeout: 30,
+    },
+    close: (ws, code, message) => {
+        // uWebSockets.js automatically handles unsubscribing the client. No action needed.
+        // console.log(`[Receiver] Client disconnected and was auto-unsubscribed.`);
+    }
+})
+.ws('/internal', {
+    compression: uWS.DISABLED,
+    maxPayloadLength: 4 * 1024,
+    idleTimeout: 30,
 
-        open: (ws) => {
-            // --- LOG ELIMINATED ---
-            // console.log('[Receiver] Internal listener connected.');
-        },
-        message: (ws, message, isBinary) => {
-            if (androidClients.size > 0) {
-                androidClients.forEach(client => {
-                    try {
-                        client.send(message, isBinary);
-                    } catch (e) {
-                        console.error(`[Receiver] Error broadcasting to a client: ${e.message}`);
-                    }
-                });
-            }
-        },
-        close: (ws, code, message) => {
-            // --- LOG ELIMINATED ---
-            // console.log('[Receiver] Internal listener disconnected.');
-        }
-    })
-    .listen(PUBLIC_PORT, (token) => {
-        listenSocketPublic = token;
-        if (token) console.log(`[Receiver] Public WebSocket server listening on port ${PUBLIC_PORT}`);
-        else {
-            console.error(`[Receiver] FAILED to listen on port ${PUBLIC_PORT}`);
-            process.exit(1);
-        }
-    })
-    .listen(INTERNAL_LISTENER_PORT, (token) => {
-        listenSocketInternal = token;
-        if (token) console.log(`[Receiver] Internal WebSocket server listening on port ${INTERNAL_LISTENER_PORT}`);
-        else {
-            console.error(`[Receiver] FAILED to listen on port ${INTERNAL_LISTENER_PORT}`);
-            process.exit(1);
-        }
-    });
+    message: (ws, message, isBinary) => {
+        // --- THE FASTEST PUSH ---
+        // Publish the message ONCE to the topic. uWS then handles broadcasting
+        // to all subscribed clients at the native C++ level. This is the "push together" action.
+        app.publish(PRICE_BROADCAST_TOPIC, message, isBinary);
+    }
+    // 'open' and 'close' handlers for the internal listener can be minimal
+})
+.listen(PUBLIC_PORT, (token) => {
+    listenSocketPublic = token;
+    if (token) console.log(`[Receiver] Public WebSocket server listening on port ${PUBLIC_PORT}`);
+    else {
+        console.error(`[Receiver] FAILED to listen on port ${PUBLIC_PORT}`);
+        process.exit(1);
+    }
+})
+.listen(INTERNAL_LISTENER_PORT, (token) => {
+    listenSocketInternal = token;
+    if (token) console.log(`[Receiver] Internal WebSocket server listening on port ${INTERNAL_LISTENER_PORT}`);
+    else {
+        console.error(`[Receiver] FAILED to listen on port ${INTERNAL_LISTENER_PORT}`);
+        process.exit(1);
+    }
+});
 
 function shutdown() {
     console.log('[Receiver] Shutting down...');
