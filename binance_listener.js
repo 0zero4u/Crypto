@@ -41,9 +41,9 @@ const BASIS_FILTER_THRESHOLD = 1.5;
 // Using the correct internal DNS for service-to-service communication
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
 
-// --- MODIFIED: Updated URLs to Binance Spot and Futures streams ---
-const SPOT_STREAM_URL = 'wss://stream.binance.com:9443/ws/btcusdt@trade';
-const FUTURES_STREAM_URL = 'wss://fstream.binance.com/ws/btcusdt@trade';
+// --- MODIFIED: Updated URLs to Binance Spot and Futures bookTicker streams ---
+const SPOT_STREAM_URL = 'wss://stream.binance.com:9443/ws/btcusdt@bookTicker';
+const FUTURES_STREAM_URL = 'wss://fstream.binance.com/ws/btcusdt@bookTicker';
 
 // --- WebSocket Clients and State ---
 let internalWsClient, spotWsClient, futuresWsClient;
@@ -115,8 +115,9 @@ function connectToSpot() {
     spotWsClient.on('message', (data) => {
         try {
             const message = JSON.parse(data.toString());
-            if (message && message.p) {
-                current_spot_price = parseFloat(message.p);
+            // MODIFIED: Check for the 'b' (best bid) property, which exists in both formats.
+            if (message && message.b) {
+                current_spot_price = parseFloat(message.b);
                 if (!isNaN(current_spot_price)) {
                     onPriceUpdate();
                 }
@@ -146,8 +147,9 @@ function connectToFutures() {
     futuresWsClient.on('message', (data) => {
         try {
             const message = JSON.parse(data.toString());
-            if (message && message.p) {
-                current_futures_price = parseFloat(message.p);
+            // MODIFIED: Check for the 'b' (best bid) property, which exists in both formats.
+            if (message && message.b) {
+                current_futures_price = parseFloat(message.b);
                 if(!isNaN(current_futures_price)) {
                     onPriceUpdate();
                 }
