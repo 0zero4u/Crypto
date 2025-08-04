@@ -36,7 +36,7 @@ function cleanupAndExit(exitCode = 1) {
 
 // --- Configuration ---
 const RECONNECT_INTERVAL_MS = 5000;
-const BASIS_FILTER_THRESHOLD = 1.0;
+const BASIS_FILTER_THRESHOLD = 1.5;
 
 // Using the correct internal DNS for service-to-service communication
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
