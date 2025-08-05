@@ -1,5 +1,5 @@
 
-// binance_futures_listener.js
+// binance_bookticker_listener.js
 const WebSocket = require('ws');
 
 // --- Process-wide Error Handling ---
@@ -38,12 +38,12 @@ function cleanupAndExit(exitCode = 1) {
 // --- Configuration ---
 const SYMBOL = 'btcusdt'; // Binance uses lowercase for streams
 const RECONNECT_INTERVAL_MS = 5000;
-const MINIMUM_TICK_SIZE = 0.3;
+const MINIMUM_TICK_SIZE = 0.1;
 
 // Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
-// --- MODIFIED: Updated URL to Binance Futures raw trade stream ---
-const EXCHANGE_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@trade`;
+// --- MODIFIED: Updated URL to Binance Futures bookTicker stream ---
+const EXCHANGE_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@bookTicker`;
 
 // --- WebSocket Clients and State ---
 let internalWsClient, exchangeWsClient;
@@ -95,20 +95,20 @@ function connectToExchange() {
         try {
             const message = JSON.parse(data.toString());
 
-            // --- MODIFIED: Process Binance trade stream data ---
-            // Binance trade stream payload has a 'p' field for price
-            if (message && message.p) {
-                const tradePrice = parseFloat(message.p);
+            // --- MODIFIED: Process Binance bookTicker stream data ---
+            // bookTicker payload has a 'b' field for the best bid price. [1]
+            if (message && message.b) {
+                const bestBidPrice = parseFloat(message.b);
 
-                if (isNaN(tradePrice)) return;
+                if (isNaN(bestBidPrice)) return;
 
-                const shouldSendPrice = (last_sent_price === null) || (Math.abs(tradePrice - last_sent_price) >= MINIMUM_TICK_SIZE);
+                const shouldSendPrice = (last_sent_price === null) || (Math.abs(bestBidPrice - last_sent_price) >= MINIMUM_TICK_SIZE);
 
                 if (shouldSendPrice) {
                     // Optimization: Mutate the single payload object instead of creating a new one.
-                    payload_to_send.p = tradePrice;
+                    payload_to_send.p = bestBidPrice;
                     sendToInternalClient(payload_to_send);
-                    last_sent_price = tradePrice;
+                    last_sent_price = bestBidPrice;
                 }
             }
         } catch (e) {
@@ -122,7 +122,7 @@ function connectToExchange() {
     });
 
     // The 'ws' library automatically handles ping/pong frames from Binance.
-    // No custom heartbeat is needed. [2, 4]
+    // No custom heartbeat is needed.
 }
 
 // --- Script Entry Point ---
