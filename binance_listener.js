@@ -1,4 +1,5 @@
-// bybit_listener_optimized.js
+
+// binance_futures_listener.js
 const WebSocket = require('ws');
 
 // --- Process-wide Error Handling ---
@@ -35,14 +36,14 @@ function cleanupAndExit(exitCode = 1) {
 }
 
 // --- Configuration ---
-const SYMBOL = 'BTCUSDT';
+const SYMBOL = 'btcusdt'; // Binance uses lowercase for streams
 const RECONNECT_INTERVAL_MS = 5000;
 const MINIMUM_TICK_SIZE = 0.1;
 
 // Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
-// --- MODIFIED: Updated URL to Bybit V5 Spot stream ---
-const EXCHANGE_STREAM_URL = 'wss://stream.bybit.com/v5/public/spot';
+// --- MODIFIED: Updated URL to Binance Futures raw trade stream ---
+const EXCHANGE_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@trade`;
 
 // --- WebSocket Clients and State ---
 let internalWsClient, exchangeWsClient;
@@ -59,18 +60,10 @@ function connectToInternalReceiver() {
 
     internalWsClient = new WebSocket(internalReceiverUrl);
 
-    // --- LOG ELIMINATED ---
-    // internalWsClient.on('error', (err) => console.error(`[Internal] WebSocket error: ${err.message}`));
-
     internalWsClient.on('close', () => {
-        // --- LOG ELIMINATED ---
-        // console.error('[Internal] Connection closed. Reconnecting...');
         internalWsClient = null; // Important to allow reconnection
         setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
     });
-
-    // --- LOG ELIMINATED ---
-    // internalWsClient.on('open', () => console.log('[Internal] Connection established.')); 
 }
 
 /**
@@ -83,36 +76,18 @@ function sendToInternalClient(payload) {
             // The payload object is mutated and sent, not recreated.
             internalWsClient.send(JSON.stringify(payload));
         } catch (e) {
-            // --- LOG ELIMINATED ---
-            // console.error(`[Internal] Failed to send message: ${e.message}`);
+            // Error logging eliminated for performance
         }
     }
 }
 
 /**
- * Establishes and maintains the connection to the Bybit WebSocket stream.
+ * Establishes and maintains the connection to the Binance WebSocket stream.
  */
 function connectToExchange() {
     exchangeWsClient = new WebSocket(EXCHANGE_STREAM_URL);
 
     exchangeWsClient.on('open', () => {
-        // --- LOG ELIMINATED ---
-        // console.log(`[Bybit] Connection established to: ${EXCHANGE_STREAM_URL}`);
-        
-        // --- MODIFIED: Subscribe to the orderbook topic for BTCUSDT ---
-        const subscriptionMessage = {
-            op: "subscribe",
-            args: [`orderbook.1.${SYMBOL}`]
-        };
-        try {
-            exchangeWsClient.send(JSON.stringify(subscriptionMessage));
-            // --- LOG ELIMINATED ---
-            // console.log(`[Bybit] Subscribed to ${subscriptionMessage.args[0]}`);
-        } catch(e) {
-            // --- LOG ELIMINATED ---
-            // console.error(`[Bybit] Failed to send subscription message: ${e.message}`);
-        }
-        
         last_sent_price = null; // Reset on new connection
     });
 
@@ -120,59 +95,36 @@ function connectToExchange() {
         try {
             const message = JSON.parse(data.toString());
 
-            // --- MODIFIED: Process Bybit orderbook data to get best bid price ---
-            if (message.topic && message.topic.startsWith('orderbook.1') && message.data) {
-                const bids = message.data.b;
-                
-                if (bids && bids.length > 0 && bids.length > 0) {
-                    const bestBidPrice = parseFloat(bids);
+            // --- MODIFIED: Process Binance trade stream data ---
+            // Binance trade stream payload has a 'p' field for price
+            if (message && message.p) {
+                const tradePrice = parseFloat(message.p);
 
-                    if (isNaN(bestBidPrice)) return;
+                if (isNaN(tradePrice)) return;
 
-                    const shouldSendPrice = (last_sent_price === null) || (Math.abs(bestBidPrice - last_sent_price) >= MINIMUM_TICK_SIZE);
+                const shouldSendPrice = (last_sent_price === null) || (Math.abs(tradePrice - last_sent_price) >= MINIMUM_TICK_SIZE);
 
-                    if (shouldSendPrice) {
-                        // Optimization: Mutate the single payload object instead of creating a new one.
-                        payload_to_send.p = bestBidPrice;
-                        sendToInternalClient(payload_to_send);
-                        last_sent_price = bestBidPrice;
-                    }
+                if (shouldSendPrice) {
+                    // Optimization: Mutate the single payload object instead of creating a new one.
+                    payload_to_send.p = tradePrice;
+                    sendToInternalClient(payload_to_send);
+                    last_sent_price = tradePrice;
                 }
             }
         } catch (e) {
-            // --- LOG ELIMINATED ---
-            // console.error(`[Bybit] Error processing message: ${e.message}`);
+             // Error logging eliminated for performance
         }
     });
-    
-    // --- LOG ELIMINATED ---
-    // exchangeWsClient.on('error', (err) => console.error('[Bybit] Connection error:', err.message));
 
     exchangeWsClient.on('close', () => {
-        // --- LOG ELIMINATED ---
-        // console.error('[Bybit] Connection closed. Reconnecting...');
         exchangeWsClient = null; // Important to allow reconnection
         setTimeout(connectToExchange, RECONNECT_INTERVAL_MS);
     });
-    
-    // Bybit requires a ping every 20 seconds to keep the connection alive
-    const heartbeatInterval = setInterval(() => {
-        if (exchangeWsClient && exchangeWsClient.readyState === WebSocket.OPEN) {
-            try {
-                exchangeWsClient.send(JSON.stringify({ op: 'ping' }));
-            } catch (e) {
-                // --- LOG ELIMINATED ---
-                // console.error(`[Bybit] Failed to send ping: ${e.message}`);
-            }
-        } else {
-            clearInterval(heartbeatInterval);
-        }
-    }, 20000);
+
+    // The 'ws' library automatically handles ping/pong frames from Binance.
+    // No custom heartbeat is needed. [2, 4]
 }
 
 // --- Script Entry Point ---
-// --- LOG ELIMINATED ---
-// console.log(`[Listener] Starting... PID: ${process.pid}`);
 connectToInternalReceiver();
 connectToExchange();
-        
