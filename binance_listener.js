@@ -38,8 +38,8 @@ function cleanupAndExit(exitCode = 1) {
 const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
 const MINIMUM_TICK_SIZE = 0.2;
-const IMBALANCE_THRESHOLD_UPPER = 0.9;
-const IMBALANCE_THRESHOLD_LOWER = 0.1;
+const IMBALANCE_THRESHOLD_UPPER = 0.85;
+const IMBALANCE_THRESHOLD_LOWER = 0.15;
 const FAKE_PRICE_OFFSET = 1.0;
 
 // --- URLS ---
