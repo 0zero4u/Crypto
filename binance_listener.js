@@ -16,7 +16,6 @@ process.on('unhandledRejection', (reason, promise) => {
  * @param {number} [exitCode=1] - The exit code to use.
  */
 function cleanupAndExit(exitCode = 1) {
-    // MODIFIED: Client name updated
     const clientsToTerminate = [internalWsClient, spotBookTickerClient, futuresBookTickerClient];
     console.error('[Listener] Initiating cleanup...');
     clientsToTerminate.forEach(client => {
@@ -38,14 +37,15 @@ function cleanupAndExit(exitCode = 1) {
 const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
 const MINIMUM_TICK_SIZE = 0.2;
-const IMBALANCE_THRESHOLD_UPPER = 0.85;
-const IMBALANCE_THRESHOLD_LOWER = 0.15;
+const IMBALANCE_THRESHOLD_UPPER = 0.9;
+const IMBALANCE_THRESHOLD_LOWER = 0.1;
 const FAKE_PRICE_OFFSET = 1.0;
+// MODIFIED: Added listening window duration
+const IMBALANCE_WINDOW_MS = 50;
 
 // --- URLS ---
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
 const SPOT_BOOKTICKER_URL = `wss://stream.binance.com:9443/ws/${SYMBOL}@bookTicker`;
-// MODIFIED: Replaced @trade with @bookTicker for the trigger
 const FUTURES_BOOKTICKER_URL = `wss://fstream.binance.com/ws/${SYMBOL}@bookTicker`;
 
 // --- WebSocket Clients and State ---
@@ -54,9 +54,11 @@ let last_sent_price = null;
 let latestSpotData = { b: null, B: null, a: null, A: null };
 let last_fake_buy_price_sent = null;
 let last_fake_sell_price_sent = null;
-
-// NEW: State to track previous futures prices to detect tick direction
 let lastFuturesTick = { b: null, a: null };
+
+// --- MODIFIED: State for the listening window ---
+// This object will hold the details of a pending check.
+let pendingImbalanceCheck = null;
 
 const payload_to_send = { type: 'S', p: 0.0 };
 
@@ -87,12 +89,18 @@ function connectToSpotBookTicker() {
         last_sent_price = null;
         last_fake_buy_price_sent = null;
         last_fake_sell_price_sent = null;
+        // MODIFIED: Ensure pending check is clear on reconnect
+        pendingImbalanceCheck = null;
     });
 
     spotBookTickerClient.on('message', (data) => {
         try {
             const message = JSON.parse(data.toString());
             if (!message || !message.b || !message.B || !message.a || !message.A) return;
+            
+            latestSpotData = message; // Always update latest spot data first
+
+            // --- 1. Standard Price Tick Logic (Unchanged) ---
             const bestBidPrice = parseFloat(message.b);
             if (!isNaN(bestBidPrice)) {
                 if ((last_sent_price === null) || (Math.abs(bestBidPrice - last_sent_price) >= MINIMUM_TICK_SIZE)) {
@@ -101,7 +109,47 @@ function connectToSpotBookTicker() {
                     last_sent_price = bestBidPrice;
                 }
             }
-            latestSpotData = message;
+
+            // --- 2. MODIFIED: Imbalance Check Logic (Moved here) ---
+            // If a check is pending, see if this new spot data satisfies it.
+            if (pendingImbalanceCheck) {
+                // Check if the listening window has expired
+                if (Date.now() > pendingImbalanceCheck.deadline) {
+                    pendingImbalanceCheck = null; // Window closed, cancel the check
+                    return;
+                }
+
+                const bidQty = parseFloat(message.B);
+                const askQty = parseFloat(message.A);
+                const totalQty = bidQty + askQty;
+                if (totalQty === 0) return;
+                const spotImbalance = bidQty / totalQty;
+
+                if (pendingImbalanceCheck.direction === 'BUY' && spotImbalance >= IMBALANCE_THRESHOLD_UPPER) {
+                    const fakePrice = pendingImbalanceCheck.basePrice + FAKE_PRICE_OFFSET;
+                    if (fakePrice !== last_fake_buy_price_sent) {
+                        payload_to_send.p = fakePrice;
+                        payload_to_send.f = true;
+                        sendToInternalClient(payload_to_send);
+                        delete payload_to_send.f;
+                        last_fake_buy_price_sent = fakePrice;
+                        console.log(`[Listener] FAKE PRICE SENT (BUY): ${JSON.stringify({p: fakePrice, f: true})}`);
+                    }
+                    pendingImbalanceCheck = null; // Important: Fulfill and cancel check
+                }
+                else if (pendingImbalanceCheck.direction === 'SELL' && spotImbalance <= IMBALANCE_THRESHOLD_LOWER) {
+                    const fakePrice = pendingImbalanceCheck.basePrice - FAKE_PRICE_OFFSET;
+                     if (fakePrice !== last_fake_sell_price_sent) {
+                        payload_to_send.p = fakePrice;
+                        payload_to_send.f = true;
+                        sendToInternalClient(payload_to_send);
+                        delete payload_to_send.f;
+                        last_fake_sell_price_sent = fakePrice;
+                        console.log(`[Listener] FAKE PRICE SENT (SELL): ${JSON.stringify({p: fakePrice, f: true})}`);
+                    }
+                    pendingImbalanceCheck = null; // Important: Fulfill and cancel check
+                }
+            }
         } catch (e) { /* Performance */ }
     });
     spotBookTickerClient.on('close', () => {
@@ -112,13 +160,11 @@ function connectToSpotBookTicker() {
     spotBookTickerClient.on('error', (err) => console.error('[Listener] Spot BookTicker error:', err.message));
 }
 
-// --- MODIFIED: This function now connects to the Futures BookTicker and infers tick direction ---
 function connectToFuturesBookTicker() {
     futuresBookTickerClient = new WebSocket(FUTURES_BOOKTICKER_URL);
 
     futuresBookTickerClient.on('open', () => {
         console.log('[Listener] Connected to Futures BookTicker Stream (Trigger).');
-        // Reset last known futures prices on connect
         lastFuturesTick = { b: null, a: null };
     });
 
@@ -130,60 +176,39 @@ function connectToFuturesBookTicker() {
             const newFuturesBid = parseFloat(f_message.b);
             const newFuturesAsk = parseFloat(f_message.a);
 
-            // On first message, just store the prices and wait for the next tick
             if (lastFuturesTick.b === null) {
                 lastFuturesTick = { b: newFuturesBid, a: newFuturesAsk };
                 return;
             }
 
-            // --- Check for Spot Imbalance ---
-            if (!latestSpotData.B || !latestSpotData.A) return;
-            const bidQty = parseFloat(latestSpotData.B);
-            const askQty = parseFloat(latestSpotData.A);
-            const totalQty = bidQty + askQty;
-            if (totalQty === 0) return;
-            const spotImbalance = bidQty / totalQty;
-
-            // --- Logic for BUY-side tick ---
-            // If futures bid price has increased, it's an UP-tick.
+            // If a futures bid price has increased, it's an UP-tick.
             if (newFuturesBid > lastFuturesTick.b) {
-                if (spotImbalance >= IMBALANCE_THRESHOLD_UPPER) {
-                    const currentSpotBid = parseFloat(latestSpotData.b);
-                    if (!isNaN(currentSpotBid)) {
-                        const fakePrice = currentSpotBid + FAKE_PRICE_OFFSET;
-                        if (fakePrice !== last_fake_buy_price_sent) {
-                            payload_to_send.p = fakePrice;
-                            payload_to_send.f = true;
-                            sendToInternalClient(payload_to_send);
-                            delete payload_to_send.f;
-                            last_fake_buy_price_sent = fakePrice;
-                            console.log(`[Listener] FAKE PRICE SENT (BUY): ${JSON.stringify({p: fakePrice, f: true})}`);
-                        }
-                    }
+                const spotBidPrice = parseFloat(latestSpotData.b);
+                if(!isNaN(spotBidPrice)) {
+                    // MODIFIED: Set a pending check instead of acting immediately
+                    console.log(`[Listener] Futures UP-tick detected. Opening ${IMBALANCE_WINDOW_MS}ms listening window.`);
+                    pendingImbalanceCheck = {
+                        direction: 'BUY',
+                        deadline: Date.now() + IMBALANCE_WINDOW_MS,
+                        basePrice: spotBidPrice // Use spot price at the moment of the trigger
+                    };
                 }
             }
-            // --- Logic for SELL-side tick ---
-            // If futures ask price has decreased, it's a DOWN-tick.
+            // If a futures ask price has decreased, it's a DOWN-tick.
             else if (newFuturesAsk < lastFuturesTick.a) {
-                if (spotImbalance <= IMBALANCE_THRESHOLD_LOWER) {
-                    const currentSpotAsk = parseFloat(latestSpotData.a);
-                    if (!isNaN(currentSpotAsk)) {
-                        const fakePrice = currentSpotAsk - FAKE_PRICE_OFFSET;
-                        if (fakePrice !== last_fake_sell_price_sent) {
-                            payload_to_send.p = fakePrice;
-                            payload_to_send.f = true;
-                            sendToInternalClient(payload_to_send);
-                            delete payload_to_send.f;
-                            last_fake_sell_price_sent = fakePrice;
-                            console.log(`[Listener] FAKE PRICE SENT (SELL): ${JSON.stringify({p: fakePrice, f: true})}`);
-                        }
-                    }
+                 const spotAskPrice = parseFloat(latestSpotData.a);
+                if(!isNaN(spotAskPrice)) {
+                    // MODIFIED: Set a pending check instead of acting immediately
+                    console.log(`[Listener] Futures DOWN-tick detected. Opening ${IMBALANCE_WINDOW_MS}ms listening window.`);
+                    pendingImbalanceCheck = {
+                        direction: 'SELL',
+                        deadline: Date.now() + IMBALANCE_WINDOW_MS,
+                        basePrice: spotAskPrice // Use spot price at the moment of the trigger
+                    };
                 }
             }
 
-            // Update the last known futures prices for the next comparison
             lastFuturesTick = { b: newFuturesBid, a: newFuturesAsk };
-
         } catch (e) { /* Performance */ }
     });
 
@@ -198,5 +223,5 @@ function connectToFuturesBookTicker() {
 
 // --- Script Entry Point ---
 connectToInternalReceiver();
-connectToSpotBookTicker(); // For standard ticks and providing spot data
-connectToFuturesBookTicker(); // As the trigger for the fake offset logic
+connectToSpotBookTicker();
+connectToFuturesBookTicker();
