@@ -50,11 +50,10 @@ const SPOT_BOOKTICKER_URL = `wss://stream.binance.com:9443/ws/${SYMBOL}@bookTick
 let internalWsClient, spotBookTickerClient, futuresTradeClient;
 let last_sent_price = null;
 let latestSpotData = { b: null, B: null, a: null, A: null };
-
-// --- MODIFIED: Added state variables to prevent duplicate fake offsets ---
 let last_fake_buy_price_sent = null;
 let last_fake_sell_price_sent = null;
 
+// Reusable payload object. The 'f' key will be added/removed as needed.
 const payload_to_send = { type: 'S', p: 0.0 };
 
 function connectToInternalReceiver() {
@@ -82,9 +81,7 @@ function connectToSpotBookTicker() {
 
     spotBookTickerClient.on('open', () => {
         console.log('[Listener] Connected to Spot BookTicker Stream.');
-        // Reset state on a new connection
         last_sent_price = null;
-        // --- MODIFIED: Reset fake price locks on reconnect ---
         last_fake_buy_price_sent = null;
         last_fake_sell_price_sent = null;
     });
@@ -99,6 +96,7 @@ function connectToSpotBookTicker() {
                 const shouldSendPrice = (last_sent_price === null) || (Math.abs(bestBidPrice - last_sent_price) >= MINIMUM_TICK_SIZE);
                 if (shouldSendPrice) {
                     payload_to_send.p = bestBidPrice;
+                    // Standard ticks do not have the 'f' flag.
                     sendToInternalClient(payload_to_send);
                     last_sent_price = bestBidPrice;
                 }
@@ -138,12 +136,13 @@ function connectToFuturesTrade() {
                     const currentBestBid = parseFloat(latestSpotData.b);
                     if (!isNaN(currentBestBid)) {
                         const fakePrice = currentBestBid + FAKE_PRICE_OFFSET;
-                        // --- MODIFIED: Check if we have already sent for this level ---
                         if (fakePrice !== last_fake_buy_price_sent) {
                             payload_to_send.p = fakePrice;
+                            payload_to_send.f = true; // --- MODIFIED: Add the fake flag ---
                             sendToInternalClient(payload_to_send);
-                            last_fake_buy_price_sent = fakePrice; // Lock this price level
-                            console.log(`[Listener] FAKE PRICE SENT (BUY): ${fakePrice}`);
+                            delete payload_to_send.f; // --- MODIFIED: Remove flag immediately after sending ---
+                            last_fake_buy_price_sent = fakePrice;
+                            console.log(`[Listener] FAKE PRICE SENT (BUY): ${JSON.stringify({p: fakePrice, f: true})}`);
                         }
                     }
                 }
@@ -152,12 +151,13 @@ function connectToFuturesTrade() {
                     const currentBestAsk = parseFloat(latestSpotData.a);
                     if (!isNaN(currentBestAsk)) {
                         const fakePrice = currentBestAsk - FAKE_PRICE_OFFSET;
-                        // --- MODIFIED: Check if we have already sent for this level ---
                         if (fakePrice !== last_fake_sell_price_sent) {
                             payload_to_send.p = fakePrice;
+                            payload_to_send.f = true; // --- MODIFIED: Add the fake flag ---
                             sendToInternalClient(payload_to_send);
-                            last_fake_sell_price_sent = fakePrice; // Lock this price level
-                            console.log(`[Listener] FAKE PRICE SENT (SELL): ${fakePrice}`);
+                            delete payload_to_send.f; // --- MODIFIED: Remove flag immediately after sending ---
+                            last_fake_sell_price_sent = fakePrice;
+                            console.log(`[Listener] FAKE PRICE SENT (SELL): ${JSON.stringify({p: fakePrice, f: true})}`);
                         }
                     }
                 }
