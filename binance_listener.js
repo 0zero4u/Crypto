@@ -41,7 +41,7 @@ const SYMBOL = 'btcusdt'; // Binance uses lowercase for streams
 const RECONNECT_INTERVAL_MS = 5000;
 
 // --- Standard Behaviour Config ---
-const MINIMUM_TICK_SIZE = 0.2;
+const MINIMUM_TICK_SIZE = 0.1;
 
 // --- Imbalance Logic Config ---
 const IMBALANCE_THRESHOLD_UPPER = 0.8; // 80% for buy-side imbalance
