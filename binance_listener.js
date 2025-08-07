@@ -35,19 +35,19 @@ function cleanupAndExit(exitCode = 1) {
 }
 
 // --- Configuration ---
-// --- MODIFIED: Updated SYMBOL for OKX format ---
 const SYMBOL = 'BTC-USDT';
 const RECONNECT_INTERVAL_MS = 5000;
-const MINIMUM_TICK_SIZE = 0.2;
+const SEND_INTERVAL_MS = 5; // New: Interval to send data to receiver
+const MINIMUM_TICK_SIZE = 0.2; // This is now used to decide when to *update* the price, not when to send
 
 // Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
-// --- MODIFIED: Updated URL to OKX V5 Spot stream ---
 const EXCHANGE_STREAM_URL = 'wss://ws.okx.com:8443/ws/v5/public';
 
 // --- WebSocket Clients and State ---
 let internalWsClient, exchangeWsClient;
 let last_sent_price = null;
+let latest_best_bid_price = null; // New: Stores the most recent bid price from the exchange
 
 // Optimization: Reusable payload object to prevent GC pressure.
 const payload_to_send = { type: 'S', p: 0.0 };
@@ -73,10 +73,9 @@ function connectToInternalReceiver() {
 function sendToInternalClient(payload) {
     if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
         try {
-            // The payload object is mutated and sent, not recreated.
             internalWsClient.send(JSON.stringify(payload));
         } catch (e) {
-            // Error logging is eliminated as per the original file's style
+            // Error logging is eliminated
         }
     }
 }
@@ -88,7 +87,6 @@ function connectToExchange() {
     exchangeWsClient = new WebSocket(EXCHANGE_STREAM_URL);
 
     exchangeWsClient.on('open', () => {
-        // --- MODIFIED: Subscribe to the bbo-tbt topic for BTC-USDT on OKX ---
         const subscriptionMessage = {
             op: "subscribe",
             args: [{
@@ -101,12 +99,11 @@ function connectToExchange() {
         } catch (e) {
             // Error logging is eliminated
         }
-
-        last_sent_price = null; // Reset on new connection
+        last_sent_price = null;
+        latest_best_bid_price = null;
     });
 
     exchangeWsClient.on('message', (data) => {
-        // OKX sends a 'pong' string in response to a 'ping'
         if (data.toString() === 'pong') {
             return;
         }
@@ -114,23 +111,20 @@ function connectToExchange() {
         try {
             const message = JSON.parse(data.toString());
 
-            // --- MODIFIED: Process OKX bbo-tbt data to get best bid price ---
             if (message.arg && message.arg.channel === 'bbo-tbt' && message.data && message.data.length > 0) {
                 const bboData = message.data[0];
-                const bids = bboData.bids; // Bids are in an array [price, size, ...]
+                const bids = bboData.bids;
 
                 if (bids && bids.length > 0) {
-                    const bestBidPrice = parseFloat(bids[0]); // Best bid price is the first element
+                    const bestBidPrice = parseFloat(bids[0]);
 
                     if (isNaN(bestBidPrice)) return;
 
-                    const shouldSendPrice = (last_sent_price === null) || (Math.abs(bestBidPrice - last_sent_price) >= MINIMUM_TICK_SIZE);
+                    // --- MODIFIED: Update the latest bid price if it meets the tick size criteria ---
+                    const shouldUpdatePrice = (latest_best_bid_price === null) || (Math.abs(bestBidPrice - latest_best_bid_price) >= MINIMUM_TICK_SIZE);
 
-                    if (shouldSendPrice) {
-                        // Optimization: Mutate the single payload object instead of creating a new one.
-                        payload_to_send.p = bestBidPrice;
-                        sendToInternalClient(payload_to_send);
-                        last_sent_price = bestBidPrice;
+                    if (shouldUpdatePrice) {
+                        latest_best_bid_price = bestBidPrice;
                     }
                 }
             }
@@ -144,7 +138,6 @@ function connectToExchange() {
         setTimeout(connectToExchange, RECONNECT_INTERVAL_MS);
     });
 
-    // --- MODIFIED: OKX requires a 'ping' string to keep the connection alive ---
     const heartbeatInterval = setInterval(() => {
         if (exchangeWsClient && exchangeWsClient.readyState === WebSocket.OPEN) {
             try {
@@ -155,9 +148,25 @@ function connectToExchange() {
         } else {
             clearInterval(heartbeatInterval);
         }
-    }, 25000); // Send ping every 25 seconds
+    }, 25000);
+}
+
+// --- MODIFIED: New function to send data on a fixed interval ---
+/**
+ * Periodically sends the latest best bid price to the internal receiver.
+ */
+function startSendingInterval() {
+    setInterval(() => {
+        // Only send if there's a valid, new price to report
+        if (latest_best_bid_price !== null && latest_best_bid_price !== last_sent_price) {
+            payload_to_send.p = latest_best_bid_price;
+            sendToInternalClient(payload_to_send);
+            last_sent_price = latest_best_bid_price; // Update the last sent price
+        }
+    }, SEND_INTERVAL_MS);
 }
 
 // --- Script Entry Point ---
 connectToInternalReceiver();
 connectToExchange();
+startSendingInterval(); // Start the new sending mechanism
