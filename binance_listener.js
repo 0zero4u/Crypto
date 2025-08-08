@@ -38,7 +38,7 @@ function cleanupAndExit(exitCode = 1) {
 const SYMBOL = 'BTC-USDT';
 const RECONNECT_INTERVAL_MS = 5000;
 const SEND_INTERVAL_MS = 5; // New: Interval to send data to receiver
-const MINIMUM_TICK_SIZE = 0.2; // This is now used to decide when to *update* the price, not when to send
+const MINIMUM_TICK_SIZE = 0.1; // This is now used to decide when to *update* the price, not when to send
 
 // Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
