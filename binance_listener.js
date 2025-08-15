@@ -1,4 +1,4 @@
-// okx_listener_optimized.js
+// binance_listener_optimized.js
 const WebSocket = require('ws');
 
 // --- Process-wide Error Handling ---
@@ -16,7 +16,7 @@ process.on('unhandledRejection', (reason, promise) => {
  * @param {number} [exitCode=1] - The exit code to use.
  */
 function cleanupAndExit(exitCode = 1) {
-    const clientsToTerminate = [internalWsClient, exchangeWsClient];
+    const clientsToTerminate = [internalWsClient, binanceWsClient];
     console.error('[Listener] Initiating cleanup...');
     clientsToTerminate.forEach(client => {
         if (client && (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING)) {
@@ -35,19 +35,18 @@ function cleanupAndExit(exitCode = 1) {
 }
 
 // --- Configuration ---
-const SYMBOL = 'BTC-USDT';
+const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
-const SEND_INTERVAL_MS = 5; // New: Interval to send data to receiver
-const MINIMUM_TICK_SIZE = 0.2; // This is now used to decide when to *update* the price, not when to send
+const MINIMUM_TICK_SIZE = 0.1;
 
 // Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
-const EXCHANGE_STREAM_URL = 'wss://ws.okx.com:8443/ws/v5/public';
+// --- MODIFIED: Updated URL to Binance Futures bookTicker stream ---
+const BINANCE_FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@bookTicker`;
 
 // --- WebSocket Clients and State ---
-let internalWsClient, exchangeWsClient;
-let last_sent_price = null;
-let latest_best_bid_price = null; // New: Stores the most recent bid price from the exchange
+let internalWsClient, binanceWsClient;
+let last_sent_trade_price = null;
 
 // Optimization: Reusable payload object to prevent GC pressure.
 const payload_to_send = { type: 'S', p: 0.0 };
@@ -57,13 +56,18 @@ const payload_to_send = { type: 'S', p: 0.0 };
  */
 function connectToInternalReceiver() {
     if (internalWsClient && (internalWsClient.readyState === WebSocket.OPEN || internalWsClient.readyState === WebSocket.CONNECTING)) return;
-
+    
     internalWsClient = new WebSocket(internalReceiverUrl);
 
+    internalWsClient.on('error', (err) => console.error(`[Internal] WebSocket error: ${err.message}`));
+    
     internalWsClient.on('close', () => {
+        console.error('[Internal] Connection closed. Reconnecting...');
         internalWsClient = null; // Important to allow reconnection
         setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
     });
+    
+    internalWsClient.on('open', () => console.log('[Internal] Connection established.'));
 }
 
 /**
@@ -73,100 +77,67 @@ function connectToInternalReceiver() {
 function sendToInternalClient(payload) {
     if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
         try {
+            // The payload object is mutated and sent, not recreated.
             internalWsClient.send(JSON.stringify(payload));
         } catch (e) {
-            // Error logging is eliminated
+            console.error(`[Internal] Failed to send message: ${e.message}`);
         }
     }
 }
 
 /**
- * Establishes and maintains the connection to the OKX WebSocket stream.
+ * Establishes and maintains the connection to the Binance WebSocket stream.
  */
-function connectToExchange() {
-    exchangeWsClient = new WebSocket(EXCHANGE_STREAM_URL);
-
-    exchangeWsClient.on('open', () => {
-        const subscriptionMessage = {
-            op: "subscribe",
-            args: [{
-                channel: "bbo-tbt",
-                instId: SYMBOL
-            }]
-        };
+function connectToBinance() {
+    // --- MODIFIED: Using the new Futures URL variable ---
+    binanceWsClient = new WebSocket(BINANCE_FUTURES_STREAM_URL);
+    
+    binanceWsClient.on('open', () => {
+        console.log(`[Binance] Connection established to stream: ${SYMBOL}@bookTicker`);
+        last_sent_trade_price = null; // Reset on new connection
+    });
+    
+    binanceWsClient.on('message', (data) => {
         try {
-            exchangeWsClient.send(JSON.stringify(subscriptionMessage));
-        } catch (e) {
-            // Error logging is eliminated
-        }
-        last_sent_price = null;
-        latest_best_bid_price = null;
-    });
+            const messageStr = data.toString();
 
-    exchangeWsClient.on('message', (data) => {
-        if (data.toString() === 'pong') {
-            return;
-        }
+            // Optimization: Manual string parsing to extract the best bid price.
+            // We are looking for the pattern: "b":"<price>"
+            const priceStartIndex = messageStr.indexOf('"b":"');
+            if (priceStartIndex === -1) return; // Best bid price key not found
 
-        try {
-            const message = JSON.parse(data.toString());
+            const valueStartIndex = priceStartIndex + 5; // Move past '"b":"'
+            const valueEndIndex = messageStr.indexOf('"', valueStartIndex);
+            if (valueEndIndex === -1) return; // Closing quote not found
 
-            if (message.arg && message.arg.channel === 'bbo-tbt' && message.data && message.data.length > 0) {
-                const bboData = message.data[0];
-                const bids = bboData.bids;
+            const priceStr = messageStr.substring(valueStartIndex, valueEndIndex);
+            const current_trade_price = parseFloat(priceStr);
 
-                if (bids && bids.length > 0) {
-                    const bestBidPrice = parseFloat(bids[0]);
+            if (isNaN(current_trade_price)) return;
 
-                    if (isNaN(bestBidPrice)) return;
+            const shouldSendPrice = (last_sent_trade_price === null) || (Math.abs(current_trade_price - last_sent_trade_price) >= MINIMUM_TICK_SIZE);
 
-                    // --- MODIFIED: Update the latest bid price if it meets the tick size criteria ---
-                    const shouldUpdatePrice = (latest_best_bid_price === null) || (Math.abs(bestBidPrice - latest_best_bid_price) >= MINIMUM_TICK_SIZE);
-
-                    if (shouldUpdatePrice) {
-                        latest_best_bid_price = bestBidPrice;
-                    }
-                }
+            if (shouldSendPrice) {
+                // Optimization: Mutate the single payload object instead of creating a new one.
+                payload_to_send.p = current_trade_price;
+                sendToInternalClient(payload_to_send);
+                last_sent_trade_price = current_trade_price;
             }
-        } catch (e) {
-            // Error logging is eliminated
+        } catch (e) { 
+            console.error(`[Binance] Error processing message: ${e.message}`);
         }
     });
 
-    exchangeWsClient.on('close', () => {
-        exchangeWsClient = null; // Important to allow reconnection
-        setTimeout(connectToExchange, RECONNECT_INTERVAL_MS);
+    binanceWsClient.on('error', (err) => console.error('[Binance] Connection error:', err.message));
+    
+    binanceWsClient.on('close', () => {
+        console.error('[Binance] Connection closed. Reconnecting...');
+        binanceWsClient = null; // Important to allow reconnection
+        setTimeout(connectToBinance, RECONNECT_INTERVAL_MS);
     });
-
-    const heartbeatInterval = setInterval(() => {
-        if (exchangeWsClient && exchangeWsClient.readyState === WebSocket.OPEN) {
-            try {
-                exchangeWsClient.send('ping');
-            } catch (e) {
-                // Error logging is eliminated
-            }
-        } else {
-            clearInterval(heartbeatInterval);
-        }
-    }, 25000);
-}
-
-// --- MODIFIED: New function to send data on a fixed interval ---
-/**
- * Periodically sends the latest best bid price to the internal receiver.
- */
-function startSendingInterval() {
-    setInterval(() => {
-        // Only send if there's a valid, new price to report
-        if (latest_best_bid_price !== null && latest_best_bid_price !== last_sent_price) {
-            payload_to_send.p = latest_best_bid_price;
-            sendToInternalClient(payload_to_send);
-            last_sent_price = latest_best_bid_price; // Update the last sent price
-        }
-    }, SEND_INTERVAL_MS);
 }
 
 // --- Script Entry Point ---
+console.log(`[Listener] Starting... PID: ${process.pid}`);
 connectToInternalReceiver();
-connectToExchange();
-startSendingInterval(); // Start the new sending mechanism
+connectToBinance();
