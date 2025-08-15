@@ -30,7 +30,7 @@ function cleanupAndExit(exitCode = 1) {
 const SYMBOL_BYBIT = 'BTCUSDT';
 const SYMBOL_OKX = 'BTC-USDT';
 const RECONNECT_INTERVAL_MS = 5000;
-const AVERAGE_PRICE_CHANGE_THRESHOLD = 1.0;
+const AVERAGE_PRICE_CHANGE_THRESHOLD = 0.3;
 
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
 
