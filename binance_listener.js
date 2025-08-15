@@ -1,4 +1,5 @@
-// okx_listener_optimized.js
+
+// bybit_listener_optimized.js
 const WebSocket = require('ws');
 
 // --- Process-wide Error Handling ---
@@ -16,7 +17,7 @@ process.on('unhandledRejection', (reason, promise) => {
  * @param {number} [exitCode=1] - The exit code to use.
  */
 function cleanupAndExit(exitCode = 1) {
-    const clientsToTerminate = [internalWsClient, exchangeWsClient];
+    const clientsToTerminate = [internalWsClient, bybitWsClient, okxWsClient, binanceWsClient];
     console.error('[Listener] Initiating cleanup...');
     clientsToTerminate.forEach(client => {
         if (client && (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING)) {
@@ -35,19 +36,30 @@ function cleanupAndExit(exitCode = 1) {
 }
 
 // --- Configuration ---
-const SYMBOL = 'BTC-USDT';
+const SYMBOL_BYBIT = 'BTCUSDT';
+const SYMBOL_OKX = 'BTC-USDT';
+const SYMBOL_BINANCE = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
-const SEND_INTERVAL_MS = 5; // New: Interval to send data to receiver
-const MINIMUM_TICK_SIZE = 0.2; // This is now used to decide when to *update* the price, not when to send
+const AVERAGE_PRICE_CHANGE_THRESHOLD = 1.0; // New threshold for sending average price
 
 // Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
-const EXCHANGE_STREAM_URL = 'wss://ws.okx.com:8443/ws/v5/public';
+
+// --- Exchange Stream URLs ---
+const BYBIT_STREAM_URL = 'wss://stream.bybit.com/v5/public/spot';
+const OKX_STREAM_URL = 'wss://ws.okx.com:8443/ws/v5/public';
+const BINANCE_STREAM_URL = `wss://stream.binance.com:9443/ws/${SYMBOL_BINANCE}@trade`;
+
 
 // --- WebSocket Clients and State ---
-let internalWsClient, exchangeWsClient;
+let internalWsClient, bybitWsClient, okxWsClient, binanceWsClient;
 let last_sent_price = null;
-let latest_best_bid_price = null; // New: Stores the most recent bid price from the exchange
+let latest_prices = {
+    bybit: null,
+    okx: null,
+    binance: null
+};
+
 
 // Optimization: Reusable payload object to prevent GC pressure.
 const payload_to_send = { type: 'S', p: 0.0 };
@@ -73,77 +85,131 @@ function connectToInternalReceiver() {
 function sendToInternalClient(payload) {
     if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
         try {
+            // The payload object is mutated and sent, not recreated.
             internalWsClient.send(JSON.stringify(payload));
         } catch (e) {
-            // Error logging is eliminated
+            // Error logging eliminated
         }
     }
 }
 
-/**
- * Establishes and maintains the connection to the OKX WebSocket stream.
- */
-function connectToExchange() {
-    exchangeWsClient = new WebSocket(EXCHANGE_STREAM_URL);
 
-    exchangeWsClient.on('open', () => {
+/**
+ * Calculates and sends the average price if the change threshold is met.
+ */
+function calculateAndSendAverage() {
+    const valid_prices = Object.values(latest_prices).filter(p => p !== null);
+    if (valid_prices.length === 0) return;
+
+    const average_price = valid_prices.reduce((sum, p) => sum + p, 0) / valid_prices.length;
+
+    const shouldSendPrice = (last_sent_price === null) || (Math.abs(average_price - last_sent_price) >= AVERAGE_PRICE_CHANGE_THRESHOLD);
+
+    if (shouldSendPrice) {
+        payload_to_send.p = average_price;
+        sendToInternalClient(payload_to_send);
+        last_sent_price = average_price;
+    }
+}
+
+/**
+ * Establishes and maintains the connection to the Bybit WebSocket stream.
+ */
+function connectToBybit() {
+    bybitWsClient = new WebSocket(BYBIT_STREAM_URL);
+
+    bybitWsClient.on('open', () => {
         const subscriptionMessage = {
             op: "subscribe",
-            args: [{
-                channel: "bbo-tbt",
-                instId: SYMBOL
-            }]
+            args: [`publicTrade.${SYMBOL_BYBIT}`]
         };
         try {
-            exchangeWsClient.send(JSON.stringify(subscriptionMessage));
-        } catch (e) {
-            // Error logging is eliminated
+            bybitWsClient.send(JSON.stringify(subscriptionMessage));
+        } catch(e) {
+            // Error logging eliminated
         }
-        last_sent_price = null;
-        latest_best_bid_price = null;
     });
 
-    exchangeWsClient.on('message', (data) => {
-        if (data.toString() === 'pong') {
-            return;
-        }
-
+    bybitWsClient.on('message', (data) => {
         try {
             const message = JSON.parse(data.toString());
-
-            if (message.arg && message.arg.channel === 'bbo-tbt' && message.data && message.data.length > 0) {
-                const bboData = message.data[0];
-                const bids = bboData.bids;
-
-                if (bids && bids.length > 0) {
-                    const bestBidPrice = parseFloat(bids[0]);
-
-                    if (isNaN(bestBidPrice)) return;
-
-                    // --- MODIFIED: Update the latest bid price if it meets the tick size criteria ---
-                    const shouldUpdatePrice = (latest_best_bid_price === null) || (Math.abs(bestBidPrice - latest_best_bid_price) >= MINIMUM_TICK_SIZE);
-
-                    if (shouldUpdatePrice) {
-                        latest_best_bid_price = bestBidPrice;
-                    }
+            if (message.topic && message.topic.startsWith('publicTrade') && message.data) {
+                const tradePrice = parseFloat(message.data[0].p);
+                if (!isNaN(tradePrice)) {
+                    latest_prices.bybit = tradePrice;
+                    calculateAndSendAverage();
                 }
             }
         } catch (e) {
-            // Error logging is eliminated
+            // Error logging eliminated
         }
     });
-
-    exchangeWsClient.on('close', () => {
-        exchangeWsClient = null; // Important to allow reconnection
-        setTimeout(connectToExchange, RECONNECT_INTERVAL_MS);
+    
+    bybitWsClient.on('close', () => {
+        latest_prices.bybit = null;
+        bybitWsClient = null;
+        setTimeout(connectToBybit, RECONNECT_INTERVAL_MS);
     });
 
     const heartbeatInterval = setInterval(() => {
-        if (exchangeWsClient && exchangeWsClient.readyState === WebSocket.OPEN) {
+        if (bybitWsClient && bybitWsClient.readyState === WebSocket.OPEN) {
             try {
-                exchangeWsClient.send('ping');
+                bybitWsClient.send(JSON.stringify({ op: 'ping' }));
             } catch (e) {
-                // Error logging is eliminated
+                // Error logging eliminated
+            }
+        } else {
+            clearInterval(heartbeatInterval);
+        }
+    }, 20000);
+}
+
+
+/**
+ * Establishes and maintains the connection to the OKX WebSocket stream.
+ */
+function connectToOkx() {
+    okxWsClient = new WebSocket(OKX_STREAM_URL);
+
+    okxWsClient.on('open', () => {
+        const subscriptionMessage = {
+            op: "subscribe",
+            args: [{ channel: "trades", instId: SYMBOL_OKX }]
+        };
+        try {
+            okxWsClient.send(JSON.stringify(subscriptionMessage));
+        } catch (e) {
+             // Error logging eliminated
+        }
+    });
+
+    okxWsClient.on('message', (data) => {
+        try {
+            const message = JSON.parse(data.toString());
+            if (message.arg && message.arg.channel === 'trades' && message.data) {
+                const tradePrice = parseFloat(message.data[0].px);
+                if (!isNaN(tradePrice)) {
+                    latest_prices.okx = tradePrice;
+                    calculateAndSendAverage();
+                }
+            }
+        } catch (e) {
+             // Error logging eliminated
+        }
+    });
+
+    okxWsClient.on('close', () => {
+        latest_prices.okx = null;
+        okxWsClient = null;
+        setTimeout(connectToOkx, RECONNECT_INTERVAL_MS);
+    });
+    
+    const heartbeatInterval = setInterval(() => {
+        if (okxWsClient && okxWsClient.readyState === WebSocket.OPEN) {
+            try {
+                okxWsClient.send('ping');
+            } catch (e) {
+                 // Error logging eliminated
             }
         } else {
             clearInterval(heartbeatInterval);
@@ -151,22 +217,39 @@ function connectToExchange() {
     }, 25000);
 }
 
-// --- MODIFIED: New function to send data on a fixed interval ---
+
 /**
- * Periodically sends the latest best bid price to the internal receiver.
+ * Establishes and maintains the connection to the Binance WebSocket stream.
  */
-function startSendingInterval() {
-    setInterval(() => {
-        // Only send if there's a valid, new price to report
-        if (latest_best_bid_price !== null && latest_best_bid_price !== last_sent_price) {
-            payload_to_send.p = latest_best_bid_price;
-            sendToInternalClient(payload_to_send);
-            last_sent_price = latest_best_bid_price; // Update the last sent price
+function connectToBinance() {
+    binanceWsClient = new WebSocket(BINANCE_STREAM_URL);
+
+    binanceWsClient.on('message', (data) => {
+        try {
+            const message = JSON.parse(data.toString());
+            // Binance trade stream does not have a topic/channel field in the message itself
+            if (message.p) {
+                const tradePrice = parseFloat(message.p);
+                if (!isNaN(tradePrice)) {
+                    latest_prices.binance = tradePrice;
+                    calculateAndSendAverage();
+                }
+            }
+        } catch (e) {
+            // Error logging eliminated
         }
-    }, SEND_INTERVAL_MS);
+    });
+
+    binanceWsClient.on('close', () => {
+        latest_prices.binance = null;
+        binanceWsClient = null;
+        setTimeout(connectToBinance, RECONNECT_INTERVAL_MS);
+    });
 }
+
 
 // --- Script Entry Point ---
 connectToInternalReceiver();
-connectToExchange();
-startSendingInterval(); // Start the new sending mechanism
+connectToBybit();
+connectToOkx();
+connectToBinance();
