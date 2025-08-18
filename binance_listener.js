@@ -38,15 +38,18 @@ function cleanupAndExit(exitCode = 1) {
 const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
 const MINIMUM_TICK_SIZE = 0.1;
+// --- MODIFIED: Added time interval for sending data ---
+const SEND_INTERVAL_MS = 25;
 
 // Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
-// --- MODIFIED: Updated URL to Binance Futures bookTicker stream ---
 const BINANCE_FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@bookTicker`;
 
 // --- WebSocket Clients and State ---
 let internalWsClient, binanceWsClient;
 let last_sent_trade_price = null;
+// --- MODIFIED: Buffer to hold the latest price from the stream ---
+let price_buffer = null;
 
 // Optimization: Reusable payload object to prevent GC pressure.
 const payload_to_send = { type: 'S', p: 0.0 };
@@ -77,7 +80,6 @@ function connectToInternalReceiver() {
 function sendToInternalClient(payload) {
     if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
         try {
-            // The payload object is mutated and sent, not recreated.
             internalWsClient.send(JSON.stringify(payload));
         } catch (e) {
             console.error(`[Internal] Failed to send message: ${e.message}`);
@@ -89,39 +91,33 @@ function sendToInternalClient(payload) {
  * Establishes and maintains the connection to the Binance WebSocket stream.
  */
 function connectToBinance() {
-    // --- MODIFIED: Using the new Futures URL variable ---
     binanceWsClient = new WebSocket(BINANCE_FUTURES_STREAM_URL);
     
     binanceWsClient.on('open', () => {
         console.log(`[Binance] Connection established to stream: ${SYMBOL}@bookTicker`);
         last_sent_trade_price = null; // Reset on new connection
+        price_buffer = null;
     });
     
+    // --- MODIFIED: Message handler now only updates the price buffer ---
     binanceWsClient.on('message', (data) => {
         try {
             const messageStr = data.toString();
 
             // Optimization: Manual string parsing to extract the best bid price.
-            // We are looking for the pattern: "b":"<price>"
             const priceStartIndex = messageStr.indexOf('"b":"');
-            if (priceStartIndex === -1) return; // Best bid price key not found
+            if (priceStartIndex === -1) return;
 
-            const valueStartIndex = priceStartIndex + 5; // Move past '"b":"'
+            const valueStartIndex = priceStartIndex + 5;
             const valueEndIndex = messageStr.indexOf('"', valueStartIndex);
-            if (valueEndIndex === -1) return; // Closing quote not found
+            if (valueEndIndex === -1) return;
 
             const priceStr = messageStr.substring(valueStartIndex, valueEndIndex);
             const current_trade_price = parseFloat(priceStr);
 
-            if (isNaN(current_trade_price)) return;
-
-            const shouldSendPrice = (last_sent_trade_price === null) || (Math.abs(current_trade_price - last_sent_trade_price) >= MINIMUM_TICK_SIZE);
-
-            if (shouldSendPrice) {
-                // Optimization: Mutate the single payload object instead of creating a new one.
-                payload_to_send.p = current_trade_price;
-                sendToInternalClient(payload_to_send);
-                last_sent_trade_price = current_trade_price;
+            if (!isNaN(current_trade_price)) {
+                // Keep updating the buffer with the very latest price received.
+                price_buffer = current_trade_price;
             }
         } catch (e) { 
             console.error(`[Binance] Error processing message: ${e.message}`);
@@ -132,12 +128,38 @@ function connectToBinance() {
     
     binanceWsClient.on('close', () => {
         console.error('[Binance] Connection closed. Reconnecting...');
-        binanceWsClient = null; // Important to allow reconnection
+        binanceWsClient = null;
         setTimeout(connectToBinance, RECONNECT_INTERVAL_MS);
     });
 }
+
+/**
+ * --- NEW: Schedules sending the buffered price at a fixed interval ---
+ * This function checks the latest price in the buffer every 25ms.
+ * It sends the price only if it has changed by the minimum tick size
+ * from the last price that was actually sent.
+ */
+function startSendingScheduler() {
+    setInterval(() => {
+        if (price_buffer === null) {
+            return; // No new price has been received yet.
+        }
+
+        const shouldSendPrice = (last_sent_trade_price === null) || 
+                                (Math.abs(price_buffer - last_sent_trade_price) >= MINIMUM_TICK_SIZE);
+
+        if (shouldSendPrice) {
+            payload_to_send.p = price_buffer;
+            sendToInternalClient(payload_to_send);
+            last_sent_trade_price = price_buffer;
+        }
+    }, SEND_INTERVAL_MS);
+}
+
 
 // --- Script Entry Point ---
 console.log(`[Listener] Starting... PID: ${process.pid}`);
 connectToInternalReceiver();
 connectToBinance();
+// --- MODIFIED: Start the scheduler to handle sending data ---
+startSendingScheduler();
