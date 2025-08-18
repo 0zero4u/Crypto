@@ -39,7 +39,7 @@ const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
 const MINIMUM_TICK_SIZE = 0.1;
 // --- MODIFIED: Added time interval for sending data ---
-const SEND_INTERVAL_MS = 20;
+const SEND_INTERVAL_MS = 25;
 
 // Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
