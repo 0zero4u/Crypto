@@ -1,5 +1,4 @@
-
-// binance_listener (60).js
+// binance_listener_optimized.js
 const WebSocket = require('ws');
 
 // --- Process-wide Error Handling ---
@@ -17,7 +16,7 @@ process.on('unhandledRejection', (reason, promise) => {
  * @param {number} [exitCode=1] - The exit code to use.
  */
 function cleanupAndExit(exitCode = 1) {
-    const clientsToTerminate = [internalWsClient, spotBookTickerClient, futuresBookTickerClient];
+    const clientsToTerminate = [internalWsClient, binanceWsClient];
     console.error('[Listener] Initiating cleanup...');
     clientsToTerminate.forEach(client => {
         if (client && (client.readyState === WebSocket.OPEN || client.readyState === WebSocket.CONNECTING)) {
@@ -28,6 +27,7 @@ function cleanupAndExit(exitCode = 1) {
             }
         }
     });
+    // Allow time for cleanup before force-exiting
     setTimeout(() => {
         console.error(`[Listener] Exiting with code ${exitCode}.`);
         process.exit(exitCode);
@@ -38,191 +38,128 @@ function cleanupAndExit(exitCode = 1) {
 const SYMBOL = 'btcusdt';
 const RECONNECT_INTERVAL_MS = 5000;
 const MINIMUM_TICK_SIZE = 0.1;
-const IMBALANCE_THRESHOLD_UPPER = 0.83;
-const IMBALANCE_THRESHOLD_LOWER = 0.17;
-const FAKE_PRICE_OFFSET = 1.0;
-// MODIFIED: Added listening window duration
-const IMBALANCE_WINDOW_MS = 100;
+// --- MODIFIED: Added time interval for sending data ---
+const SEND_INTERVAL_MS = 20;
 
-// --- URLS ---
+// Using the correct internal DNS for service-to-service communication in GCP
 const internalReceiverUrl = 'ws://instance-20250627-040948.asia-south2-a.c.ace-server-460719-b7.internal:8082/internal';
-const SPOT_BOOKTICKER_URL = `wss://stream.binance.com:9443/ws/${SYMBOL}@bookTicker`;
-const FUTURES_BOOKTICKER_URL = `wss://fstream.binance.com/ws/${SYMBOL}@bookTicker`;
+const BINANCE_FUTURES_STREAM_URL = `wss://fstream.binance.com/ws/${SYMBOL}@bookTicker`;
 
 // --- WebSocket Clients and State ---
-let internalWsClient, spotBookTickerClient, futuresBookTickerClient;
-let last_sent_price = null;
-let latestSpotData = { b: null, B: null, a: null, A: null };
-let last_fake_buy_price_sent = null;
-let last_fake_sell_price_sent = null;
-let lastFuturesTick = { b: null, a: null };
+let internalWsClient, binanceWsClient;
+let last_sent_trade_price = null;
+// --- MODIFIED: Buffer to hold the latest price from the stream ---
+let price_buffer = null;
 
-// --- MODIFIED: State for the listening window ---
-// This object will hold the details of a pending check.
-let pendingImbalanceCheck = null;
-
+// Optimization: Reusable payload object to prevent GC pressure.
 const payload_to_send = { type: 'S', p: 0.0 };
 
+/**
+ * Establishes and maintains the connection to the internal WebSocket receiver.
+ */
 function connectToInternalReceiver() {
     if (internalWsClient && (internalWsClient.readyState === WebSocket.OPEN || internalWsClient.readyState === WebSocket.CONNECTING)) return;
+    
     internalWsClient = new WebSocket(internalReceiverUrl);
-    internalWsClient.on('open', () => console.log('[Listener] Connected to internal receiver.'));
+
+    internalWsClient.on('error', (err) => console.error(`[Internal] WebSocket error: ${err.message}`));
+    
     internalWsClient.on('close', () => {
-        console.log('[Listener] Disconnected from internal receiver. Reconnecting...');
-        internalWsClient = null;
+        console.error('[Internal] Connection closed. Reconnecting...');
+        internalWsClient = null; // Important to allow reconnection
         setTimeout(connectToInternalReceiver, RECONNECT_INTERVAL_MS);
     });
-    internalWsClient.on('error', (err) => console.error('[Listener] Internal receiver connection error:', err.message));
+    
+    internalWsClient.on('open', () => console.log('[Internal] Connection established.'));
 }
 
+/**
+ * Sends a payload to the internal WebSocket client.
+ * @param {object} payload - The data to send.
+ */
 function sendToInternalClient(payload) {
     if (internalWsClient && internalWsClient.readyState === WebSocket.OPEN) {
         try {
             internalWsClient.send(JSON.stringify(payload));
-        } catch (e) { /* Performance */ }
+        } catch (e) {
+            console.error(`[Internal] Failed to send message: ${e.message}`);
+        }
     }
 }
 
-function connectToSpotBookTicker() {
-    spotBookTickerClient = new WebSocket(SPOT_BOOKTICKER_URL);
-    spotBookTickerClient.on('open', () => {
-        console.log('[Listener] Connected to Spot BookTicker Stream.');
-        last_sent_price = null;
-        last_fake_buy_price_sent = null;
-        last_fake_sell_price_sent = null;
-        // MODIFIED: Ensure pending check is clear on reconnect
-        pendingImbalanceCheck = null;
+/**
+ * Establishes and maintains the connection to the Binance WebSocket stream.
+ */
+function connectToBinance() {
+    binanceWsClient = new WebSocket(BINANCE_FUTURES_STREAM_URL);
+    
+    binanceWsClient.on('open', () => {
+        console.log(`[Binance] Connection established to stream: ${SYMBOL}@bookTicker`);
+        last_sent_trade_price = null; // Reset on new connection
+        price_buffer = null;
     });
-
-    spotBookTickerClient.on('message', (data) => {
+    
+    // --- MODIFIED: Message handler now only updates the price buffer ---
+    binanceWsClient.on('message', (data) => {
         try {
-            const message = JSON.parse(data.toString());
-            if (!message || !message.b || !message.B || !message.a || !message.A) return;
-            
-            latestSpotData = message; // Always update latest spot data first
+            const messageStr = data.toString();
 
-            // --- 1. Standard Price Tick Logic (Unchanged) ---
-            const bestBidPrice = parseFloat(message.b);
-            if (!isNaN(bestBidPrice)) {
-                if ((last_sent_price === null) || (Math.abs(bestBidPrice - last_sent_price) >= MINIMUM_TICK_SIZE)) {
-                    payload_to_send.p = bestBidPrice;
-                    sendToInternalClient(payload_to_send);
-                    last_sent_price = bestBidPrice;
-                }
+            // Optimization: Manual string parsing to extract the best bid price.
+            const priceStartIndex = messageStr.indexOf('"b":"');
+            if (priceStartIndex === -1) return;
+
+            const valueStartIndex = priceStartIndex + 5;
+            const valueEndIndex = messageStr.indexOf('"', valueStartIndex);
+            if (valueEndIndex === -1) return;
+
+            const priceStr = messageStr.substring(valueStartIndex, valueEndIndex);
+            const current_trade_price = parseFloat(priceStr);
+
+            if (!isNaN(current_trade_price)) {
+                // Keep updating the buffer with the very latest price received.
+                price_buffer = current_trade_price;
             }
-
-            // --- 2. MODIFIED: Imbalance Check Logic (Moved here) ---
-            // If a check is pending, see if this new spot data satisfies it.
-            if (pendingImbalanceCheck) {
-                // Check if the listening window has expired
-                if (Date.now() > pendingImbalanceCheck.deadline) {
-                    pendingImbalanceCheck = null; // Window closed, cancel the check
-                    return;
-                }
-
-                const bidQty = parseFloat(message.B);
-                const askQty = parseFloat(message.A);
-                const totalQty = bidQty + askQty;
-                if (totalQty === 0) return;
-                const spotImbalance = bidQty / totalQty;
-
-                if (pendingImbalanceCheck.direction === 'BUY' && spotImbalance >= IMBALANCE_THRESHOLD_UPPER) {
-                    const fakePrice = pendingImbalanceCheck.basePrice + FAKE_PRICE_OFFSET;
-                    if (fakePrice !== last_fake_buy_price_sent) {
-                        payload_to_send.p = fakePrice;
-                        payload_to_send.f = true;
-                        sendToInternalClient(payload_to_send);
-                        delete payload_to_send.f;
-                        last_fake_buy_price_sent = fakePrice;
-                        console.log(`[Listener] FAKE PRICE SENT (BUY): ${JSON.stringify({p: fakePrice, f: true})}`);
-                    }
-                    pendingImbalanceCheck = null; // Important: Fulfill and cancel check
-                }
-                else if (pendingImbalanceCheck.direction === 'SELL' && spotImbalance <= IMBALANCE_THRESHOLD_LOWER) {
-                    const fakePrice = pendingImbalanceCheck.basePrice - FAKE_PRICE_OFFSET;
-                     if (fakePrice !== last_fake_sell_price_sent) {
-                        payload_to_send.p = fakePrice;
-                        payload_to_send.f = true;
-                        sendToInternalClient(payload_to_send);
-                        delete payload_to_send.f;
-                        last_fake_sell_price_sent = fakePrice;
-                        console.log(`[Listener] FAKE PRICE SENT (SELL): ${JSON.stringify({p: fakePrice, f: true})}`);
-                    }
-                    pendingImbalanceCheck = null; // Important: Fulfill and cancel check
-                }
-            }
-        } catch (e) { /* Performance */ }
+        } catch (e) { 
+            console.error(`[Binance] Error processing message: ${e.message}`);
+        }
     });
-    spotBookTickerClient.on('close', () => {
-        console.log('[Listener] Disconnected from Spot BookTicker. Reconnecting...');
-        spotBookTickerClient = null;
-        setTimeout(connectToSpotBookTicker, RECONNECT_INTERVAL_MS);
+
+    binanceWsClient.on('error', (err) => console.error('[Binance] Connection error:', err.message));
+    
+    binanceWsClient.on('close', () => {
+        console.error('[Binance] Connection closed. Reconnecting...');
+        binanceWsClient = null;
+        setTimeout(connectToBinance, RECONNECT_INTERVAL_MS);
     });
-    spotBookTickerClient.on('error', (err) => console.error('[Listener] Spot BookTicker error:', err.message));
 }
 
-function connectToFuturesBookTicker() {
-    futuresBookTickerClient = new WebSocket(FUTURES_BOOKTICKER_URL);
+/**
+ * --- NEW: Schedules sending the buffered price at a fixed interval ---
+ * This function checks the latest price in the buffer every 25ms.
+ * It sends the price only if it has changed by the minimum tick size
+ * from the last price that was actually sent.
+ */
+function startSendingScheduler() {
+    setInterval(() => {
+        if (price_buffer === null) {
+            return; // No new price has been received yet.
+        }
 
-    futuresBookTickerClient.on('open', () => {
-        console.log('[Listener] Connected to Futures BookTicker Stream (Trigger).');
-        lastFuturesTick = { b: null, a: null };
-    });
+        const shouldSendPrice = (last_sent_trade_price === null) || 
+                                (Math.abs(price_buffer - last_sent_trade_price) >= MINIMUM_TICK_SIZE);
 
-    futuresBookTickerClient.on('message', (data) => {
-        try {
-            const f_message = JSON.parse(data.toString());
-            if (!f_message || !f_message.b || !f_message.a) return;
-
-            const newFuturesBid = parseFloat(f_message.b);
-            const newFuturesAsk = parseFloat(f_message.a);
-
-            if (lastFuturesTick.b === null) {
-                lastFuturesTick = { b: newFuturesBid, a: newFuturesAsk };
-                return;
-            }
-
-            // If a futures bid price has increased, it's an UP-tick.
-            if (newFuturesBid > lastFuturesTick.b) {
-                const spotBidPrice = parseFloat(latestSpotData.b);
-                if(!isNaN(spotBidPrice)) {
-                    // MODIFIED: Set a pending check instead of acting immediately
-                    console.log(`[Listener] Futures UP-tick detected. Opening ${IMBALANCE_WINDOW_MS}ms listening window.`);
-                    pendingImbalanceCheck = {
-                        direction: 'BUY',
-                        deadline: Date.now() + IMBALANCE_WINDOW_MS,
-                        basePrice: spotBidPrice // Use spot price at the moment of the trigger
-                    };
-                }
-            }
-            // If a futures ask price has decreased, it's a DOWN-tick.
-            else if (newFuturesAsk < lastFuturesTick.a) {
-                 const spotAskPrice = parseFloat(latestSpotData.a);
-                if(!isNaN(spotAskPrice)) {
-                    // MODIFIED: Set a pending check instead of acting immediately
-                    console.log(`[Listener] Futures DOWN-tick detected. Opening ${IMBALANCE_WINDOW_MS}ms listening window.`);
-                    pendingImbalanceCheck = {
-                        direction: 'SELL',
-                        deadline: Date.now() + IMBALANCE_WINDOW_MS,
-                        basePrice: spotAskPrice // Use spot price at the moment of the trigger
-                    };
-                }
-            }
-
-            lastFuturesTick = { b: newFuturesBid, a: newFuturesAsk };
-        } catch (e) { /* Performance */ }
-    });
-
-    futuresBookTickerClient.on('close', () => {
-        console.log('[Listener] Disconnected from Futures BookTicker. Reconnecting...');
-        futuresBookTickerClient = null;
-        setTimeout(connectToFuturesBookTicker, RECONNECT_INTERVAL_MS);
-    });
-    futuresBookTickerClient.on('error', (err) => console.error('[Listener] Futures BookTicker error:', err.message));
+        if (shouldSendPrice) {
+            payload_to_send.p = price_buffer;
+            sendToInternalClient(payload_to_send);
+            last_sent_trade_price = price_buffer;
+        }
+    }, SEND_INTERVAL_MS);
 }
 
 
 // --- Script Entry Point ---
+console.log(`[Listener] Starting... PID: ${process.pid}`);
 connectToInternalReceiver();
-connectToSpotBookTicker();
-connectToFuturesBookTicker();
+connectToBinance();
+// --- MODIFIED: Start the scheduler to handle sending data ---
+startSendingScheduler();
