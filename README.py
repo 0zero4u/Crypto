@@ -1,0 +1,335 @@
+import asyncio
+import websockets
+import json
+import time
+import bisect
+import math
+from collections import deque, defaultdict
+from dataclasses import dataclass, field
+from typing import Deque, Optional, Tuple, List, Dict, Any
+
+try:
+    import nest_asyncio
+    nest_asyncio.apply()
+except ImportError:
+    print("nest_asyncio not found. This is fine for standard Python scripts.")
+
+
+#
+# 1. DATA STRUCTURES & CONFIGURATION
+#
+@dataclass
+class Tick:
+    ts: float; bid: float; ask: float; last_price: float; last_size: float; last_side: int; pre_trade_mid: float
+    @property
+    def mid(self) -> float: return (self.bid + self.ask) * 0.5
+    @property
+    def spread(self) -> float: return self.ask - self.bid
+    @property
+    def price_impact(self) -> float:
+        if self.pre_trade_mid == 0: return 0.0
+        return (self.last_price - self.pre_trade_mid) * self.last_side
+
+@dataclass
+class Config:
+    """Config v10.3: With MAX_SHOCK signal and Performance Tracking."""
+    benchmark_warmup_minutes: float = 4.0
+    benchmark_lookback_minutes: float = 7.0
+    live_run_minutes: float = 60.0
+    lts_percentile_thresh: float = 99.8
+    tfi_lookback_trades: int = 18
+    sv_lookback_ticks: int = 10
+    sv_max_abs_thresh: float = 0.50
+    tfi_lookback_for_std_dev: int = 200
+    tfi_std_dev_multiplier: float = 3.75
+    signal_cooldown_ms: int = 1500
+    min_signal_strength_thresh: float = 2.9
+    min_price_impact_for_confirmation: float = 0.8
+    cluster_max_lookback_ms: int = 20000
+    weak_signal_strength_thresh: float = 2.9
+    strong_escalation_thresh: float = 20.0
+    verification_trade_lookahead: int = 17
+    verification_min_net_flow: int = 12
+    dominant_flow_lookback_trades: int = 1000
+    forgiving_streak_length_thresh: int = 45
+    forgiving_streak_max_lives: int = 8
+    forgiving_streak_max_counter_volume_ratio: float = 0.30
+    target_return: float = 0.0006
+    stop_loss_return: float = -0.0001
+    max_holding_time_seconds: int = 120
+    reporting_interval_signals: int = 25
+
+#
+# 2. PERFORMANCE TRACKERS
+#
+@dataclass
+class PendingSignal:
+    entry_ts: float; entry_price: float; side: int; reason: str; strength: float; tp_price: float; sl_price: float
+class PerformanceTracker:
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+        self.pending_signals: Deque[PendingSignal] = deque()
+        self.signal_stats: Dict[str, Dict[str, Any]] = defaultdict(lambda: {'count': 0, 'hits': 0, 'misses': 0, 'timeouts': 0, 'total_pnl_return': 0.0})
+        self.total_signals_generated = 0
+        self.last_reported_signal_count = 0
+    def add_signal(self, signal_info: Dict[str, Any], entry_price: float):
+        self.total_signals_generated += 1
+        side = signal_info['signal_pulse']
+        tp_price = entry_price * (1 + self.cfg.target_return * side)
+        sl_price = entry_price * (1 + self.cfg.stop_loss_return * side)
+        pending = PendingSignal(entry_ts=signal_info['ts'], entry_price=entry_price, side=side, reason=signal_info['reason'], strength=signal_info['strength'], tp_price=tp_price, sl_price=sl_price)
+        self.pending_signals.append(pending)
+    def evaluate_signals(self, current_ts: float, current_mid_price: float):
+        signals_to_keep = deque()
+        for signal in self.pending_signals:
+            pnl_return, outcome = 0.0, None
+            if signal.side == 1:
+                if current_mid_price >= signal.tp_price: pnl_return, outcome = self.cfg.target_return, 'HIT'
+                elif current_mid_price <= signal.sl_price: pnl_return, outcome = self.cfg.stop_loss_return, 'MISS'
+            else:
+                if current_mid_price <= signal.tp_price: pnl_return, outcome = self.cfg.target_return, 'HIT'
+                elif current_mid_price >= signal.sl_price: pnl_return, outcome = self.cfg.stop_loss_return, 'MISS'
+            if not outcome and (current_ts - signal.entry_ts) > self.cfg.max_holding_time_seconds:
+                pnl_return, outcome = ((current_mid_price - signal.entry_price) / signal.entry_price) * signal.side, 'TIMEOUT'
+            if outcome: self._update_stats(signal.reason, pnl_return, outcome)
+            else: signals_to_keep.append(signal)
+        self.pending_signals = signals_to_keep
+    def _update_stats(self, reason: str, pnl_return: float, outcome: str):
+        stats = self.signal_stats[reason]
+        stats['count'] += 1; stats['total_pnl_return'] += pnl_return
+        if outcome == 'HIT': stats['hits'] += 1
+        elif outcome == 'MISS': stats['misses'] += 1
+        elif outcome == 'TIMEOUT': stats['timeouts'] += 1
+    def maybe_report_metrics(self):
+        if self.total_signals_generated > 0 and self.total_signals_generated // self.cfg.reporting_interval_signals > self.last_reported_signal_count // self.cfg.reporting_interval_signals:
+            self.last_reported_signal_count = self.total_signals_generated
+            print("\n" + "="*80 + f"\nPERFORMANCE REPORT @ {self.total_signals_generated} SIGNALS (Time: {time.ctime()})\n" + "="*80)
+            print(f"{'Signal Reason':<30} | {'Count':>6} | {'Hit Rate':>10} | {'Avg PnL %':>10} | {'Total PnL %':>12}"); print("-"*80)
+            total_pnl, total_count = 0.0, 0
+            sorted_reasons = sorted(self.signal_stats.keys(), key=lambda r: self.signal_stats[r]['count'], reverse=True)
+            for reason in sorted_reasons:
+                stats = self.signal_stats[reason]; count = stats['count']
+                if count == 0: continue
+                total_pnl += stats['total_pnl_return']; total_count += count
+                hit_rate = (stats['hits'] / count) * 100 if count > 0 else 0
+                avg_pnl = (stats['total_pnl_return'] / count) * 100 if count > 0 else 0
+                total_pnl_reason = stats['total_pnl_return'] * 100
+                print(f"{reason:<30} | {count:>6} | {hit_rate:>9.2f}% | {avg_pnl:>9.4f}% | {total_pnl_reason:>11.4f}%")
+            print("-"*80)
+            overall_hit_rate = (sum(s['hits'] for s in self.signal_stats.values()) / total_count) * 100 if total_count > 0 else 0
+            overall_avg_pnl = (total_pnl / total_count) * 100 if total_count > 0 else 0
+            print(f"{'OVERALL':<30} | {total_count:>6} | {overall_hit_rate:>9.2f}% | {overall_avg_pnl:>9.4f}% | {total_pnl * 100:>11.4f}%"); print("="*80 + "\n")
+
+#
+# 3. HFT CORE LOGIC (SignalEngine is Modified)
+#
+# ... [RollingPercentile, RollingStandardDeviation, FeatureEngine, StealthDetector ] ...
+class RollingPercentile:
+    def __init__(self, lookback_s: float, sampling_interval_s: float):
+        self.max_size = int(lookback_s / sampling_interval_s); self.history_q: Deque[float] = deque(maxlen=self.max_size); self.sorted_history: List[float] = []
+    def update(self, value: float):
+        if len(self.history_q) == self.max_size:
+            oldest_val = self.history_q[0]; old_idx = bisect.bisect_left(self.sorted_history, oldest_val)
+            if old_idx < len(self.sorted_history) and self.sorted_history[old_idx] == oldest_val: self.sorted_history.pop(old_idx)
+        self.history_q.append(value); bisect.insort_left(self.sorted_history, value)
+    def get_percentile_rank(self, value: float) -> float:
+        if not self.sorted_history: return 50.0
+        return (bisect.bisect_left(self.sorted_history, value) / len(self.sorted_history)) * 100.0
+    @property
+    def is_ready(self) -> bool: return len(self.history_q) > self.max_size * 0.20
+class RollingStandardDeviation:
+    def __init__(self, window_size: int): self.window_size = window_size; self.q: Deque[float] = deque(maxlen=window_size); self.sum = 0.0; self.sum_sq = 0.0
+    def update(self, value: float):
+        if len(self.q) == self.window_size: oldest_val = self.q[0]; self.sum -= oldest_val; self.sum_sq -= oldest_val**2
+        self.q.append(value); self.sum += value; self.sum_sq += value**2
+    @property
+    def mean(self) -> float: return self.sum / len(self.q) if self.q else 0.0
+    @property
+    def std_dev(self) -> float:
+        n = len(self.q)
+        if n < 2: return 0.0
+        mean = self.mean; variance = (self.sum_sq / n) - (mean**2)
+        return math.sqrt(variance) if variance > 0 else 0.0
+    @property
+    def is_ready(self) -> bool: return len(self.q) >= self.window_size * 0.5
+@dataclass
+class FeatureState:
+    trade_flow_hist: Deque[Tuple[float, int]] = field(default_factory=deque); spread_history: Deque[float] = field(default_factory=deque); dominant_flow_hist: Deque[int] = field(default_factory=deque)
+class FeatureEngine:
+    def __init__(self, cfg: Config): self.cfg = cfg; self.trade_size_benchmarker = RollingPercentile(cfg.benchmark_lookback_minutes * 60.0, 1/20.0); self.tfi_benchmarker = RollingStandardDeviation(cfg.tfi_lookback_for_std_dev)
+    def update(self, tick: Tick, state: FeatureState) -> Dict[str, any]:
+        state.trade_flow_hist.append((tick.last_size, tick.last_side));
+        if len(state.trade_flow_hist) > self.cfg.tfi_lookback_trades: state.trade_flow_hist.popleft()
+        tfi = sum(size * side for size, side in state.trade_flow_hist); self.tfi_benchmarker.update(tfi)
+        self.trade_size_benchmarker.update(tick.last_size); size_pct_rank = self.trade_size_benchmarker.get_percentile_rank(tick.last_size)
+        is_large_trade = size_pct_rank > self.cfg.lts_percentile_thresh; state.spread_history.append(tick.spread)
+        if len(state.spread_history) > self.cfg.sv_lookback_ticks: state.spread_history.popleft()
+        spread_velocity = (tick.spread - state.spread_history[0]) if len(state.spread_history) > 1 else 0.0
+        state.dominant_flow_hist.append(tick.last_side)
+        if len(state.dominant_flow_hist) > self.cfg.dominant_flow_lookback_trades: state.dominant_flow_hist.popleft()
+        dominant_flow = sum(state.dominant_flow_hist)
+        return {'mid': tick.mid, 'last_trade_side': tick.last_side, 'size_pct_rank': size_pct_rank, 'is_large_trade': is_large_trade, 'tfi': tfi, 'spread_velocity': spread_velocity, 'adaptive_tfi_thresh': self.tfi_benchmarker.std_dev * self.cfg.tfi_std_dev_multiplier, 'price_impact': tick.price_impact, 'dominant_flow': dominant_flow}
+    def is_ready(self) -> bool: return self.trade_size_benchmarker.is_ready and self.tfi_benchmarker.is_ready
+@dataclass
+class ForgivingStreakState:
+    side: int = 0; length: int = 0; lives_used: int = 0; total_volume: float = 0.0
+class StealthDetector:
+    def __init__(self, cfg: Config): self.cfg = cfg; self.streak = ForgivingStreakState()
+    def _update_forgiving_streak(self, tick: Tick):
+        if self.streak.side == tick.last_side: self.streak.length += 1; self.streak.total_volume += tick.last_size
+        else:
+            avg_streak_trade_size = (self.streak.total_volume / self.streak.length) if self.streak.length > 0 else 0
+            is_small_counter = tick.last_size < (avg_streak_trade_size * self.cfg.forgiving_streak_max_counter_volume_ratio)
+            if self.streak.lives_used < self.cfg.forgiving_streak_max_lives and is_small_counter and avg_streak_trade_size > 0: self.streak.lives_used += 1
+            else: self.streak = ForgivingStreakState(side=tick.last_side, length=1, lives_used=0, total_volume=tick.last_size)
+    def _analyze_patterns(self) -> Dict[str, Any]:
+        if self.streak.length >= self.cfg.forgiving_streak_length_thresh: return {'type': 'FORGIVING', 'side': self.streak.side, 'strength': float(self.streak.length)}
+        return {'type': None, 'side': 0, 'strength': 0.0}
+    def update(self, tick: Tick) -> Dict[str, Any]: self._update_forgiving_streak(tick); return self._analyze_patterns()
+
+@dataclass
+class SignalState:
+    last_pulse_ts: float = 0.0
+
+# <<< MODIFIED CLASS >>>
+class SignalEngine:
+    def __init__(self, cfg: Config):
+        self.cfg = cfg
+        self.state = SignalState()
+
+    def _calculate_strength(self, features: Dict[str, any], reason_str: str, stealth_info: Dict[str, Any]) -> float:
+        std_dev = (features['adaptive_tfi_thresh'] / self.cfg.tfi_std_dev_multiplier) + 1e-9
+        confirmation_strength = abs(features['tfi']) / std_dev
+        trigger_strength = 0.0
+        if "SHOCK" in reason_str or "COMBO" in reason_str:
+            trigger_strength = (features['size_pct_rank'] - self.cfg.lts_percentile_thresh) * 5
+        elif stealth_info['type'] is not None:
+            trigger_strength = stealth_info['strength']
+        return (0.5 * trigger_strength) + (0.5 * confirmation_strength)
+
+    def step(self, ts: float, features: Dict[str, any], stealth_info: Dict[str, Any]) -> Dict[str, any]:
+        if ts - self.state.last_pulse_ts < self.cfg.signal_cooldown_ms / 1000.0:
+            return {'signal_pulse': 0}
+
+        side = features['last_trade_side']
+
+        # <<< NEW: MAX_SHOCK SIGNAL (HIGHEST PRIORITY) >>>
+        # This signal triggers on the absolute largest trade in the lookback window.
+        # It bypasses all other confirmation logic due to its extreme significance.
+        if features['size_pct_rank'] >= 99.9:
+            reason = f"MAX_SHOCK_{'BUY' if side == 1 else 'SELL'}"
+            strength = 25.0  # Assign a very high, fixed strength
+            self.state.last_pulse_ts = ts
+            return {'signal_pulse': side, 'reason': reason, 'strength': strength, 'ts': ts}
+
+        # --- Standard Signal Logic ---
+        is_large_trade = features['is_large_trade']
+        is_stealth_triggered = stealth_info['type'] is not None
+
+        # Absorption check (unchanged)
+        if is_large_trade and features['price_impact'] < 0:
+            signal_side = -side
+            reason = f"ABSORPTION_{'BUY' if signal_side == 1 else 'SELL'}"
+            strength = abs(features['price_impact']) * 100
+            if strength < self.cfg.min_signal_strength_thresh: return {'signal_pulse': 0}
+            self.state.last_pulse_ts = ts
+            return {'signal_pulse': signal_side, 'reason': reason, 'strength': strength, 'ts': ts}
+
+        potential_reason = ''
+        if is_large_trade and is_stealth_triggered and side == stealth_info['side']:
+            potential_reason = f"COMBO-{stealth_info['type']}_{'BUY' if side == 1 else 'SELL'}"
+        elif is_large_trade:
+            potential_reason = f"SHOCK_{'BUY' if side == 1 else 'SELL'}"
+        elif is_stealth_triggered and side == stealth_info['side']:
+            potential_reason = f"{stealth_info['type']}_{'BUY' if side == 1 else 'SELL'}"
+
+        if not potential_reason: return {'signal_pulse': 0}
+
+        tfi_confirms = abs(features['tfi']) > features['adaptive_tfi_thresh']
+        spread_is_stable = abs(features['spread_velocity']) < self.cfg.sv_max_abs_thresh
+        price_impact_confirms = features['price_impact'] > self.cfg.min_price_impact_for_confirmation
+
+        if not (tfi_confirms and spread_is_stable and price_impact_confirms): return {'signal_pulse': 0}
+
+        strength = self._calculate_strength(features, potential_reason, stealth_info)
+        if strength < self.cfg.min_signal_strength_thresh: return {'signal_pulse': 0}
+
+        self.state.last_pulse_ts = ts
+        return {'signal_pulse': side, 'reason': potential_reason, 'strength': strength, 'ts': ts}
+
+
+@dataclass
+class SignalRecord:
+    ts: float; side: int; strength: float; reason: str
+# ... [OrderPunchEngine ] ...
+class OrderPunchEngine:
+    def __init__(self, cfg: Config): self.cfg = cfg; self.recent_signals: Deque[SignalRecord] = deque(maxlen=10); self.pending_verification_signal: Optional[SignalRecord] = None; self.verification_trade_counter: int = 0; self.verification_net_flow: int = 0
+    def _reset_verification(self): self.pending_verification_signal = None; self.verification_trade_counter = 0; self.verification_net_flow = 0
+    def step(self, signal_info: Dict[str, any], tick: Tick) -> Dict[str, any]:
+        if self.pending_verification_signal:
+            self.verification_trade_counter += 1; self.verification_net_flow += tick.last_side
+            if self.verification_trade_counter >= self.cfg.verification_trade_lookahead:
+                is_verified = (abs(self.verification_net_flow) >= self.cfg.verification_min_net_flow and self.verification_net_flow * self.pending_verification_signal.side > 0)
+                result = {'status': 'VERIFIED' if is_verified else 'INVALIDATED', 'signal': self.pending_verification_signal, 'net_flow': self.verification_net_flow}
+                self._reset_verification(); return result
+            return {'status': 'PENDING'}
+        if signal_info.get('signal_pulse', 0) != 0:
+            new_signal = SignalRecord(ts=signal_info['ts'], side=signal_info['signal_pulse'], strength=signal_info['strength'], reason=signal_info['reason'])
+            self.recent_signals.append(new_signal)
+            if len(self.recent_signals) >= 2:
+                last_signal, prev_signal = self.recent_signals[-1], self.recent_signals[-2]
+                if (last_signal.side == prev_signal.side and (last_signal.ts - prev_signal.ts) * 1000 < self.cfg.cluster_max_lookback_ms):
+                    is_absorption_setup = "ABSORPTION" in prev_signal.reason
+                    valid_pattern = not (is_absorption_setup and ("ABSORPTION" in last_signal.reason or last_signal.strength < self.cfg.strong_escalation_thresh))
+                    if valid_pattern:
+                        is_strong_first = prev_signal.strength >= self.cfg.weak_signal_strength_thresh
+                        is_escalated = (prev_signal.strength < self.cfg.weak_signal_strength_thresh and last_signal.strength >= self.cfg.strong_escalation_thresh)
+                        if is_strong_first or is_escalated: self.pending_verification_signal = last_signal; return {'status': 'CLUSTER_FOUND', 'signal': last_signal}
+        return {'status': 'IDLE'}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#
+# 4. LIVE WEBSOCKET HANDLER
+#
+async def live_signal_generator(cfg: Config):
+    uri = "wss://fstream.binance.com/stream?streams=btcusdt@bookTicker/btcusdt@trade"
+    fe, sig, punch_engine, fe_state = FeatureEngine(cfg), SignalEngine(cfg), OrderPunchEngine(cfg), FeatureState()
+    stealth_detector = StealthDetector(cfg); performance_tracker = PerformanceTracker(cfg)
+    start_time, warmup_end_ts = time.time(), time.time() + cfg.benchmark_warmup_minutes * 60.0
+    run_end_ts = start_time + cfg.live_run_minutes * 60.0
+    latest_bid_price, latest_ask_price = None, None
+    print(f"Connecting to {uri}..\nHFT Logic Warm-up will last for {cfg.benchmark_warmup_minutes} minutes.")
+    G, R, Y, C, M, B, W, END = '\033[92m', '\033[91m', '\033[93m', '\033[96m', '\033[95m', '\033[94m', '\033[97m', '\033[0m'
+    def _log_signal(ts, signal_info, features):
+        ts_str, mid_str = time.ctime(ts)[11:19], f"Mid:{features['mid']:.2f}"
+        reason_str, strength = signal_info['reason'], signal_info['strength']
+        score_str = f"Strength:{strength:.2f}"
+        if "ABSORPTION" in reason_str: COLOR, trigger_info = C, f"Impact:{features['price_impact']:.4f}"
+        else:
+            trigger_info = f"Sz%:{features['size_pct_rank']:.1f}" if "SHOCK" in reason_str or "COMBO" in reason_str or "MAX_SHOCK" in reason_str else f"StrL:{int(strength)}" # Corrected logging for MAX_SHOCK
+            COLOR = Y if "COMBO" in reason_str or "MAX_SHOCK" in reason_str else (G if signal_info['signal_pulse'] == 1 else R)
+        print(f"{COLOR}{ts_str} | {mid_str} | {trigger_info} | {score_str} | > PULSE ({reason_str}){END}")
+    async with websockets.connect(uri) as websocket:
+        print("Connection successful!")
+        is_warmed_up = False
+        while time.time() < run_end_ts:
+            try: message = await asyncio.wait_for(websocket.recv(), timeout=10.0)
+            except asyncio.TimeoutError: print("Websocket timeout."); continue
+            data = json.loads(message); stream, payload = data.get('stream'), data.get('data')
+            if stream == 'btcusdt@bookTicker': latest_bid_price, latest_ask_price = float(payload['b']), float(payload['a'])
+            elif stream == 'btcusdt@trade':
+                if latest_bid_price is None: continue
+                pre_trade_mid = (latest_bid_price + latest_ask_price) * 0.5; current_ts = time.time ()
