@@ -384,4 +384,77 @@ async def live_bandit_signal_generator(parameter_sets, switch_every=20):
             except asyncio.TimeoutError:
                 print("Websocket timeout.")
                 continue
-            data = json.lo
+            data = json.looads(message)
+            stream, payload = data.get('stream'), data.get('data')
+            if stream == 'btcusdt@bookTicker':
+                latest_bid_price, latest_ask_price = float(payload['b']), float(payload['a'])
+            elif stream == 'btcusdt@trade':
+                if latest_bid_price is None: continue
+                pre_trade_mid = (latest_bid_price + latest_ask_price) * 0.5
+                current_ts = time.time()
+
+                tick = Tick(
+                    ts=current_ts,
+                    bid=latest_bid_price, ask=latest_ask_price,
+                    last_price=float(payload['p']),
+                    last_size=float(payload['q']),
+                    last_side=int(1 if payload['m'] == False else -1),
+                    pre_trade_mid=pre_trade_mid
+                )
+                features = fe.update(tick, fe_state)
+                stealth_info = stealth_detector.update(tick)
+                signal_info = sig_engine.step(current_ts, features, stealth_info)
+
+                # --------- Bandit PARAMETER SWITCHING EVERY N SIGNALS
+                if (signal_counter % switch_every) == 0:
+                    idx = bandit.select_arm()  # Pick next config index
+                    active_config = parameter_sets[idx]
+                    print(f"{Y}{time.ctime(current_ts)[11:19]} Bandit switched to parameter set #{idx + 1}: {active_config}{END}")
+
+                    # re-init all state with new config for next switch_every signals
+                    fe = FeatureEngine(active_config)
+                    stealth_detector = StealthDetector(active_config)
+                    performance_tracker = PerformanceTracker(active_config)
+                    sig_engine = SignalEngine(active_config)
+                    punch_engine = OrderPunchEngine(active_config)
+
+                # --- Run rest of main trade logic using current active_config (no changes in HFT triggers)
+                if features and signal_info and signal_info.get('signal_pulse', 0) != 0:
+                    # Logging, reporting, etc (insert as before)
+                    # Optionally: performance_tracker.add_signal(signal_info, features['mid']),
+                    # punch_engine handling, etc.
+
+                    # For demonstration, simulate closing trade and compute PnL:
+                    # Here PnL logic should be linked to your entry/exit reporting
+                    realized_pnl = np.random.normal(0.0004, 0.001)  # DEMO: Replace with your actual trade PnL result logic
+                    bandit.record_pnl(realized_pnl)
+                    all_signal_pnls.append((signal_counter, idx, realized_pnl))
+
+                    # Optional: show bandit stats every 25 signals
+                    if (signal_counter % 25) == 0:
+                        print(f"{M}Bandit rolling avg PnL per arm: {bandit.show_avgs()}{END}")
+
+                signal_counter += 1
+
+#
+# 5. PARAMETER SETUP & EXECUTION
+#
+if __name__ == "__main__":
+    # EXAMPLE ARMS: Add/modify as needed (3 configs here)
+    parameter_sets = [
+        Config(tfi_std_dev_multiplier=3.5, forgiving_streak_length_thresh=30, min_signal_strength_thresh=4.0, lts_percentile_thresh=99.7, verification_min_net_flow=8),
+        Config(tfi_std_dev_multiplier=4.5, forgiving_streak_length_thresh=45, min_signal_strength_thresh=5.0, lts_percentile_thresh=99.8, verification_min_net_flow=12),
+        Config(tfi_std_dev_multiplier=5.5, forgiving_streak_length_thresh=25, min_signal_strength_thresh=6.5, lts_percentile_thresh=99.85, verification_min_net_flow=20),
+    ]
+    print("="*60)
+    print("      HFT Signal Gen v10.3 w/ Softmax Bandit Tuner      ")
+    print("="*60)
+    print("Testing configs:")
+    for i, cfg in enumerate(parameter_sets): print(f" Arm {i + 1}: {cfg}")
+    print("-"*60)
+    try:
+        asyncio.run(live_bandit_signal_generator(parameter_sets, switch_every=20))
+    except KeyboardInterrupt:
+        print("\nScript interrupted by user. Exiting.")
+    except Exception as e:
+        print(f"\nAn error occurred: {e}"
