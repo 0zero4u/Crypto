@@ -185,4 +185,76 @@ MAX_SHOCK_BUY                       |      4 |      0.00% |   -0.0080% |     -0.
 --------------------------------------------------------------------------------
 OVERALL                             |     48 |     39.58% |    0.0189% |      0.9080%
 ================================================================================
+      15:41:44 | CLUSTER DETECTED (SELL 50.00)... PENDING VERIFICATION...
+15:41:44 | Mid:110692.45 | Flow:-17 | Strength:50.00 | COUNTER-TREND | >>> ORDER PUNCH: SELL VERIFIED! (MAX_SHOCK_SELL)
+15:41:46 | Mid:110653.25 | Sz%:100.0 | Strength:50.00 | [3m:-19.1% 5m:-1.2% 15m:-2.4%] -> NEUTRAL (Divergence: 17.9%) | > PULSE (MAX_SHOCK_SELL)
+15:41:46 | CLUSTER DETECTED (SELL 50.00)... PENDING VERIFICATION...
+15:41:46 | Mid:110653.25 | Flow:-17 | Strength:50.00 | Trend Following | >>> ORDER PUNCH: SELL VERIFIED! (MAX_SHOCK_SELL)
+15:41:55 | Mid:110670.65 | StrL:90 | Strength:90.44 | [3m:-24.7% 5m:-2.6% 15m:-4.2%] -> NEUTRAL (Divergence: 22.0%) | > PULSE (FORGIVING_SELL)
+15:41:55 | CLUSTER DETECTED (SELL 90.44)... PENDING VERIFICATION...
+15:41:56 | VERIFICATION FAILED for SELL cluster. (Flow:-11). Resetting.
+15:42:08 | Mid:110682.00 | StrL:59 | Strength:59.44 | [3m:-25.0% 5m:-5.1% 15m:-6.5%] -> NEUTRAL (Divergence: 19.9%) | > PULSE (FORGIVING_SELL)
+15:42:08 | CLUSTER DETECTED (SELL 59.44)... PENDING VERIFICATION...
+15:42:08 | VERIFICATION FAILED for SELL cluster. (Flow:7). Resetting.
+15:42:15 [CONV_DEBUG] New: 17.6% | Rank: 4.0% | HistSize: 25/25 | HistMax: 54.3%
+15:42:15 | Mid:110708.45 | StrL:46 | Strength:46.18 | [3m:-24.2% 5m:-4.6% 15m:-11.0%] -> BEARISH (Conviction: -17.6%) | > PULSE (FORGIVING_SELL)
+15:42:15 | CLUSTER DETECTED (SELL 46.18)... PENDING VERIFICATION...
+15:42:15 | Mid:110705.45 | Flow:-13 | Strength:46.18 | COUNTER-TREND | >>> ORDER PUNCH: SELL VERIFIED! (FORGIVING_SELL)
+15:42:49 [CONV_DEBUG] New: 12.7% | Rank: 0.0% | HistSize: 25/25 | HistMax: 48.8%
+15:42:49 | Mid:110784.00 | StrL:147 | Strength:147.47 | [3m:-15.3% 5m:-0.0% 15m:-10.2%] -> BEARISH (Conviction: -12.7%) | > PULSE (FORGIVING_BUY)
+15:42:58 | Mid:110781.55 | StrL:43 | Strength:43.75 | [3m:-15.4% 5m:-0.2% 15m:-5.0%] -> NEUTRAL (Divergence: 15.1%) | > PULSE (FORGIVING_BUY)
+15:42:58 | CLUSTER DETECTED (BUY 43.75)... PENDING VERIFICATION...
+15:42:58 | Mid:110778.65 | Flow:17 | Strength:43.75 | Trend Following | >>> ORDER PUNCH: BUY VERIFIED! (FORGIVING_BUY)
+15:43:08 | Mid:110692.35 | StrL:60 | Strength:60.09 | [3m:-8.5% 5m:1.4% 15m:-4.8%] -> NEUTRAL (Divergence: 9.9%) | > PULSE (FORGIVING_SELL)
+15:43:24 | Mid:110626.05 | StrL:22 | Strength:22.77 | [3m:-11.5% 5m:-0.3% 15m:-5.1%] -> NEUTRAL (Divergence: 11.3%) | > PULSE (FORGIVING_SELL)
+15:43:24 | CLUSTER DETECTED (SELL 22.77)... PENDING VERIFICATION...
+15:43:24 | Mid:110626.05 | Flow:-17 | Strength:22.77 | Trend Following | >>> ORDER PUNCH: SELL VERIFIED! (FORGIVING_SELL)
+15:43:26 | Mid:110614.20 | StrL:60 | Strength:60.23 | [3m:-12.5% 5m:-2.4% 15m:-5.3%] -> NEUTRAL (Divergence: 10.1%) | > PULSE (FORGIVING_SELL)
+15:43:26 | CLUSTER DETECTED (SELL 60.23)... PENDING VERIFICATION...
+15:43:27 | VERIFICATION FAILED for SELL cluster. (Flow:1). Resetting.
+15:43:28 | Mid:110611.95 | Sz%:100.0 | Strength:50.00 | [3m:-14.4% 5m:-4.5% 15m:-5.6%] -> NEUTRAL (Divergence: 9.9%) | > PULSE (MAX_SHOCK_BUY)
+15:43:37 | Mid:110631.55 | StrL:126 | Strength:126.42 | [3m:-9.8% 5m:-6.2% 15m:-3.0%] -> NEUTRAL (Divergence: 6.9%) | > PULSE (FORGIVING_BUY)
+15:43:37 | CLUSTER DETECTED (BUY 126.42)... PENDING VERIFICATION...
+15:43:37 | Mid:110631.55 | Flow:17 | Strength:126.42 | Trend Following | >>> ORDER PUNCH: BUY VERIFIED! (FORGIVING_BUY)
+15:44:02 | Mid:110620.05 | StrL:81 | Strength:81.64 | [3m:-6.7% 5m:-4.6% 15m:-1.5%] -> NEUTRAL (Divergence: 5.1%) | > PULSE (FORGIVING_SELL)
+15:44:31 | Mid:110619.25 | Sz%:100.0 | Strength:50.00 | [3m:-5.8% 5m:-8.3% 15m:-1.1%] -> NEUTRAL (Divergence: 7.1%) | > PULSE (MAX_SHOCK_BUY)
+15:44:46 | Mid:110648.15 | StrL:87 | Strength:87.11 | [3m:12.0% 5m:-6.5% 15m:-0.7%] -> NEUTRAL (Divergence: 18.5%) | > PULSE (FORGIVING_BUY)
+15:44:46 | CLUSTER DETECTED (BUY 87.11)... PENDING VERIFICATION...
+15:44:46 | Mid:110664.75 | Flow:17 | Strength:87.11 | Trend Following | >>> ORDER PUNCH: BUY VERIFIED! (FORGIVING_BUY)
+15:44:57 | Mid:110681.85 | StrL:14 | Strength:14.75 | [3m:13.4% 5m:-6.2% 15m:-0.7%] -> NEUTRAL (Divergence: 19.6%) | > PULSE (FORGIVING_BUY)
+15:44:57 | CLUSTER DETECTED (BUY 14.75)... PENDING VERIFICATION...
+15:44:58 | Mid:110683.05 | Flow:13 | Strength:14.75 | Trend Following | >>> ORDER PUNCH: BUY VERIFIED! (FORGIVING_BUY)
+15:46:17 | Mid:110673.45 | StrL:38 | Strength:38.89 | [3m:2.9% 5m:-2.6% 15m:-7.1%] -> NEUTRAL (Divergence: 9.9%) | > PULSE (FORGIVING_BUY)
+15:46:45 | Mid:110556.15 | StrL:19 | Strength:19.47 | [3m:-3.6% 5m:3.6% 15m:-6.3%] -> NEUTRAL (Divergence: 9.9%) | > PULSE (FORGIVING_SELL)
+15:46:47 | Mid:110543.55 | Sz%:100.0 | Strength:50.00 | [3m:-3.4% 5m:8.6% 15m:-6.2%] -> NEUTRAL (Divergence: 14.8%) | > PULSE (MAX_SHOCK_BUY)
+15:46:56 | Mid:110599.95 | StrL:44 | Strength:44.30 | [3m:-1.9% 5m:10.0% 15m:-5.1%] -> NEUTRAL (Divergence: 15.0%) | > PULSE (FORGIVING_BUY)
+15:46:56 | CLUSTER DETECTED (BUY 44.30)... PENDING VERIFICATION...
+15:46:56 | Mid:110609.15 | Flow:13 | Strength:44.30 | Trend Following | >>> ORDER PUNCH: BUY VERIFIED! (FORGIVING_BUY)
+15:47:05 | Mid:110496.75 | Sz%:100.0 | Strength:50.00 | [3m:-5.5% 5m:1.4% 15m:-6.9%] -> NEUTRAL (Divergence: 8.3%) | > PULSE (MAX_SHOCK_SELL)
+15:47:07 | Mid:110460.35 | StrL:27 | Strength:27.95 | [3m:-11.8% 5m:-3.7% 15m:-8.6%] -> NEUTRAL (Divergence: 8.1%) | > PULSE (FORGIVING_SELL)
+15:47:07 | CLUSTER DETECTED (SELL 27.95)... PENDING VERIFICATION...
+15:47:07 | Mid:110460.35 | Flow:-17 | Strength:27.95 | Trend Following | >>> ORDER PUNCH: SELL VERIFIED! (FORGIVING_SELL)
+15:47:09 | Mid:110505.05 | StrL:14 | Strength:14.54 | [3m:-14.9% 5m:-6.8% 15m:-9.6%] -> NEUTRAL (Divergence: 8.1%) | > PULSE (FORGIVING_SELL)
+15:47:09 | CLUSTER DETECTED (SELL 14.54)... PENDING VERIFICATION...
+15:47:09 | Mid:110505.05 | Flow:-13 | Strength:14.54 | COUNTER-TREND | >>> ORDER PUNCH: SELL VERIFIED! (FORGIVING_SELL)
+15:47:11 [CONV_DEBUG] New: 12.8% | Rank: 4.0% | HistSize: 25/25 | HistMax: 44.5%
+15:47:11 | Mid:110526.40 | StrL:108 | Strength:108.38 | [3m:-15.6% 5m:-8.1% 15m:-10.1%] -> BEARISH (Conviction: -12.8%) | > PULSE (FORGIVING_BUY)
+15:47:39 [CONV_DEBUG] New: 14.4% | Rank: 8.0% | HistSize: 25/25 | HistMax: 43.4%
+15:47:39 | Mid:110578.25 | StrL:39 | Strength:39.25 | [3m:-18.6% 5m:-6.4% 15m:-10.2%] -> BEARISH (Conviction: -14.4%) | > PULSE (FORGIVING_BUY)
+15:48:21 [CONV_DEBUG] New: 17.5% | Rank: 16.0% | HistSize: 25/25 | HistMax: 38.0%
+15:48:21 | Mid:110500.05 | Sz%:100.0 | Strength:50.00 | [3m:-23.3% 5m:-11.7% 15m:-8.3%] -> BEARISH (Conviction: -17.5%) | > PULSE (MAX_SHOCK_SELL)
+
+================================================================================
+PERFORMANCE REPORT @ 75 SIGNALS (Time: Wed Oct 15 15:48:21 2025)
+================================================================================
+Signal Reason                       |  Count |   Hit Rate |  Avg PnL % |  Total PnL %
+--------------------------------------------------------------------------------
+FORGIVING_BUY                       |     34 |     32.35% |    0.0140% |      0.4760%
+FORGIVING_SELL                      |     26 |     38.46% |    0.0182% |      0.4720%
+MAX_SHOCK_SELL                      |      7 |     28.57% |    0.0114% |      0.0800%
+MAX_SHOCK_BUY                       |      7 |     14.29% |    0.0017% |      0.0120%
+--------------------------------------------------------------------------------
+OVERALL                             |     74 |     32.43% |    0.0141% |      1.0400%
+================================================================================
+
 
